@@ -5,7 +5,7 @@ from pathlib import Path
 from ..config import OutputConfig
 from .base import EncodedPatch, PatchSink, patch_stem, prepare_image
 from .files import FileSink, ImageFileSink, JpegSink, NoneSink, NullSink, PngSink
-from .tar import TarSink
+from .tar import TarSink, generate_tar_preview
 
 
 def create_sink(
@@ -25,6 +25,9 @@ def create_sink(
             destination,
             shard_max_count=config.shard_max_count,
             jpeg_quality=config.jpeg_quality,
+            preview_enabled=config.tar_preview,
+            preview_count=config.tar_preview_n,
+            preview_seed=config.tar_preview_seed,
             overwrite=config.overwrite,
         )
     if config.mode == "none":
@@ -46,6 +49,7 @@ __all__ = [
     "PngSink",
     "TarSink",
     "create_sink",
+    "generate_tar_preview",
     "make_sink",
     "patch_stem",
     "prepare_image",

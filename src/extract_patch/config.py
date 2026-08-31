@@ -40,6 +40,9 @@ class OutputConfig:
     mode: str = "jpeg"
     jpeg_quality: int = 90
     shard_max_count: int = 1000
+    tar_preview: bool = False
+    tar_preview_n: int = 20
+    tar_preview_seed: int = 0
     overwrite: bool = False
 
 
@@ -125,6 +128,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("min_region_fraction must be in [0, 1]")
     if config.output.mode not in {"jpeg", "png", "tar", "none"}:
         raise ValueError("output.mode must be jpeg, png, tar, or none")
+    if config.output.tar_preview_n < 0:
+        raise ValueError("output.tar_preview_n cannot be negative")
     for name in (
         "slide_workers",
         "read_workers_per_slide",

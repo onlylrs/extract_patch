@@ -67,3 +67,5 @@ output:
   root: /jhcnas6/Private/POH/patches
   mode: tar
   jpeg_quality: 90
+  tar_preview: true
+  tar_preview_n: 20
