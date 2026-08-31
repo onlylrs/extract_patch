@@ -12,27 +12,15 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .config import AppConfig, PatchingConfig
+from .config import AppConfig
 from .filters import FilterDecision, PatchFilterPipeline
 from .heuristics import HeuristicPipeline
 from .models import PatchPlan, PatchRecord, RunResult, SlideResult, SlideSpec
-from .planner import plan_patches
+from .planner import effective_patching, plan_patches
 from .readers import open_reader, stage_slide
 from .reporting import RunLogger, make_run_id
 from .sinks import PatchSink, create_sink, patch_stem
 from .sinks.base import EncodedPatch, prepare_image
-
-
-def _effective_patching(config: PatchingConfig, mpp: float | None, downsample: float) -> PatchingConfig:
-    if config.target_mpp is None or mpp is None:
-        return config
-    level_mpp = mpp * downsample
-    scale = config.target_mpp / level_mpp
-    return dataclasses.replace(
-        config,
-        patch_size=max(1, round(config.output_size * scale)),
-        stride=max(1, round(config.stride * scale)),
-    )
 
 
 def _expected_name(sink: PatchSink, plan: PatchPlan) -> str:
@@ -274,7 +262,7 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
             )
             if decision.status != "accepted" or decision.region is None:
                 raise RuntimeError(f"Heuristic pipeline failed: {decision.reason}")
-            effective = _effective_patching(
+            effective = effective_patching(
                 config.patching,
                 metadata.mpp,
                 metadata.level_downsamples[config.patching.level],

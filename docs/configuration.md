@@ -7,7 +7,9 @@
 - `reader`：`auto|aslide|openslide`、缩略图宽度、可选本地 staging。
 - `heuristic_pipe` 与 `heuristics`：fallback 顺序和方法参数。
 - `post_filter_pipe` 与 `post_filters`：patch 读取后的后筛顺序和参数；如nonempty后筛。默认关闭。
-- `patching`：level、patch/output size、stride、mask 覆盖率、采样上限。
+- `patching`：level、输出 `mpp`、patch/output size、stride、mask 覆盖率、采样上限。
+  `mpp: null` 时保留指定 level 的原生 MPP；设置数值时按该 level 读取后使用 LANCZOS
+  缩放到目标 MPP。
 - `output`：`jpeg|png|tar|none`、质量和 shard 大小。
 - `parallel`：slide/read/encode/write workers 以及 inflight 上限。
 - `logging`、`preview`：默认输出位置。

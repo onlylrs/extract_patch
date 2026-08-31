@@ -57,12 +57,13 @@ post_filters:
 
 patching:
   level: 0
-  patch_size: 1200
-  output_size: 1200
-  stride: 1200
+  mpp: 0.5
+  patch_size: 600
+  output_size: 600
+  stride: 600
   min_region_fraction: 0.10
 
 output:
-  root: outputs/patches
-  mode: jpeg
+  root: /jhcnas6/Private/POH/patches
+  mode: tar
   jpeg_quality: 90

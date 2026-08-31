@@ -8,6 +8,7 @@ heuristic_pipe:
 
 patching:
   level: 0
+  mpp: 0.5
   patch_size: 1200
   output_size: 1200
   stride: 1200

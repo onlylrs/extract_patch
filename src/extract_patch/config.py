@@ -31,7 +31,7 @@ class PatchingConfig:
     max_patches_per_slide: int = 0
     sampling: str = "all"
     seed: int = 0
-    target_mpp: float | None = None
+    mpp: float | None = None
 
 
 @dataclass
@@ -119,6 +119,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("patch sizes must be positive")
     if config.patching.stride <= 0:
         raise ValueError("stride must be positive")
+    if config.patching.mpp is not None and config.patching.mpp <= 0:
+        raise ValueError("patching.mpp must be positive or null")
     if not 0 <= config.patching.min_region_fraction <= 1:
         raise ValueError("min_region_fraction must be in [0, 1]")
     if config.output.mode not in {"jpeg", "png", "tar", "none"}:

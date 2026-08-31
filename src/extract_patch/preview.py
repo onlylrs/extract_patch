@@ -12,7 +12,7 @@ from .config import AppConfig
 from .filters import PatchFilterPipeline
 from .heuristics import HeuristicPipeline
 from .models import RunResult, SlideResult, SlideSpec
-from .planner import plan_patches
+from .planner import effective_patching, plan_patches
 from .readers import open_reader
 from .reporting import RunLogger, make_run_id, save_overlay
 from .sinks.base import prepare_image
@@ -38,7 +38,12 @@ def _preview_slide(
             )
             if decision.status != "accepted" or decision.region is None:
                 raise RuntimeError(f"Heuristic pipeline failed: {decision.reason}")
-            plans = plan_patches(metadata, decision.region, config.patching)
+            effective = effective_patching(
+                config.patching,
+                metadata.mpp,
+                metadata.level_downsamples[config.patching.level],
+            )
+            plans = plan_patches(metadata, decision.region, effective)
             rng = np.random.default_rng(config.preview.seed)
             n = min(config.preview.n_patches, len(plans))
             candidate_indices = rng.permutation(len(plans)).tolist() if n else []

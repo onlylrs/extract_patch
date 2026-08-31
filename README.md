@@ -38,6 +38,10 @@ TXT（一行一个路径，引号可有可无）. 示例：
 Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.jpg`，以及随机保存8张patches `patches/`供检查.
 默认保存在 `outputs/preview/`.
 
+### level, mpp, size
+
+默认使用最清晰的level0, mpp默认对齐到0.5 (upsample会使用LANCZOS插值)，patch size conventionally: 1200/600取决于器官。
+
 ## 正式提取
 
 ```bash
@@ -55,7 +59,7 @@ Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.
 ./run_extract.sh --show-config --config configs/default.yaml
 ```
 
-## 输出约定
+## 输出
 
 普通文件模式的 patch 目录只包含图片，命名方式为{x}_{y}_{output_size}.jpg
 ：

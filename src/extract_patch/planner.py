@@ -1,12 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 import numpy as np
 
 from .config import PatchingConfig
 from .models import PatchPlan, RegionMask, SlideMetadata
+
+
+def effective_patching(
+    config: PatchingConfig,
+    mpp: float | None,
+    downsample: float,
+) -> PatchingConfig:
+    """Resolve read size and stride needed to produce the configured output MPP."""
+    if config.mpp is None or mpp is None:
+        return config
+    level_mpp = mpp * downsample
+    scale = config.mpp / level_mpp
+    return replace(
+        config,
+        patch_size=max(1, round(config.output_size * scale)),
+        stride=max(1, round(config.stride * scale)),
+    )
 
 
 @dataclass(frozen=True)
