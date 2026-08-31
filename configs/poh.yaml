@@ -1,0 +1,68 @@
+reader:
+  backend: auto
+  fallback: openslide
+  thumbnail_width: 1024
+
+heuristic_pipe:
+  - serrated_outer_circle
+  - density
+
+heuristics:
+  serrated_outer_circle:
+    min_confidence: 0.55
+    min_inner_radius_fraction: 0.16
+    max_inner_radius_fraction: 0.42
+    min_outer_to_inner_ratio: 1.12
+    expansion: 1.00
+    hough_expansion: 1.00
+    hough_param1: 50
+    hough_param2: 18
+    hough_min_radius: 0.25
+    hough_max_radius: 0.39
+    geometry_fallback_radius_fraction: 0.36
+    max_sparse_radius_fraction: 0.40
+    density_min_radius_fraction: 0.28
+    density_max_radius_fraction: 0.36
+    prior_center_x_fraction: 0.50
+    prior_center_y_fraction: 0.41
+    max_prior_center_distance: 0.14
+    radial_min_radius: 0.27
+    radial_max_radius: 0.36
+    radial_center_extent: 0.09
+    radial_center_step: 0.012
+    radial_band_ratio: 0.012
+    radial_angle_count: 72
+    safe_inner_radius_fraction: 0.445
+    density_expansion_ratio: 0.010
+    within_density:
+      density_sigma_ratio: 0.030
+      density_threshold_ratio: 0.025
+      close_ratio: 0.035
+      open_ratio: 0.003
+      min_component_area_ratio: 0.00005
+  density:
+    density_sigma_ratio: 0.025
+    density_threshold_ratio: 0.08
+
+post_filter_pipe:
+  - nonempty
+
+post_filters:
+  nonempty:
+    max_analysis_dimension: 320
+    background_sigma_ratio: 0.035
+    local_color_delta: 3.0
+    min_local_color_fraction: 0.001
+    min_laplacian_std: 1.9
+
+patching:
+  level: 0
+  patch_size: 1200
+  output_size: 1200
+  stride: 1200
+  min_region_fraction: 0.10
+
+output:
+  root: outputs/patches
+  mode: jpeg
+  jpeg_quality: 90

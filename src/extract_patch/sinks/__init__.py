@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from ..config import OutputConfig
+from .base import EncodedPatch, PatchSink, patch_stem, prepare_image
+from .files import FileSink, ImageFileSink, JpegSink, NoneSink, NullSink, PngSink
+from .tar import TarSink
+
+
+def create_sink(
+    config: OutputConfig, output_dir: Path | str | None = None
+) -> PatchSink:
+    destination = Path(config.root) if output_dir is None else Path(output_dir)
+    if config.mode == "jpeg":
+        return JpegSink(
+            destination,
+            jpeg_quality=config.jpeg_quality,
+            overwrite=config.overwrite,
+        )
+    if config.mode == "png":
+        return PngSink(destination, overwrite=config.overwrite)
+    if config.mode == "tar":
+        return TarSink(
+            destination,
+            shard_max_count=config.shard_max_count,
+            jpeg_quality=config.jpeg_quality,
+            overwrite=config.overwrite,
+        )
+    if config.mode == "none":
+        return NoneSink(destination)
+    raise ValueError(f"Unknown output mode: {config.mode}")
+
+
+sink_from_config = create_sink
+make_sink = create_sink
+
+__all__ = [
+    "EncodedPatch",
+    "FileSink",
+    "ImageFileSink",
+    "JpegSink",
+    "NoneSink",
+    "NullSink",
+    "PatchSink",
+    "PngSink",
+    "TarSink",
+    "create_sink",
+    "make_sink",
+    "patch_stem",
+    "prepare_image",
+    "sink_from_config",
+]

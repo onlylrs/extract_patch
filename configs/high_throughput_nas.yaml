@@ -1,0 +1,18 @@
+heuristic_pipe:
+  - density
+
+reader:
+  staging_enabled: false
+
+output:
+  mode: tar
+  shard_max_count: 2000
+
+parallel:
+  slide_workers: 2
+  read_workers_per_slide: 4
+  encode_workers: 4
+  writer_workers: 1
+  max_inflight_patches: 64
+  max_inflight_bytes: 1073741824
+  opencv_threads: 1

@@ -1,0 +1,28 @@
+reader:
+  backend: auto
+  fallback: openslide
+  thumbnail_width: 2048
+
+heuristic_pipe:
+  - density
+
+patching:
+  level: 0
+  patch_size: 1200
+  output_size: 1200
+  stride: 1200
+  min_region_fraction: 0.10
+  inclusion: fraction
+
+output:
+  root: outputs/patches
+  mode: jpeg
+  jpeg_quality: 90
+
+parallel:
+  slide_workers: 1
+  read_workers_per_slide: 4
+  encode_workers: 2
+  writer_workers: 2
+  max_inflight_patches: 32
+  max_inflight_bytes: 536870912
