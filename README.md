@@ -5,10 +5,14 @@
 ## 环境
 
 ```bash
-pip install numpy pillow pyyaml tqdm opencv-python-headless openslide-python
+pip install pillow pyyaml tqdm openslide-python
 ```
 
 单独安装(ASlide)[https://github.com/MrPeterJin/ASlide]
+
+```bash
+pip install "opencv-python-headless>=4.10,<4.12"
+```
 
 ## Preview
 
