@@ -86,3 +86,4 @@ TAR 模式可通过 `output.tar_preview: true` 在每个 `slide_id/preview/` 中
 - [配置](docs/configuration.md)
 - [输出与恢复](docs/outputs.md)
 - [性能调优](docs/performance.md)
+- [示例](docs/examples.md)
