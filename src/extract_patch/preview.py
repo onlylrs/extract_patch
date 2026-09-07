@@ -44,6 +44,12 @@ def _preview_slide(
                 metadata.level_downsamples[config.patching.level],
             )
             plans = plan_patches(metadata, decision.region, effective)
+            logger.logger.info(
+                "slide=%s planned_patches=%d heuristic=%s",
+                spec.slide_id,
+                len(plans),
+                decision.name,
+            )
             rng = np.random.default_rng(config.preview.seed)
             n = min(config.preview.n_patches, len(plans))
             candidate_indices = rng.permutation(len(plans)).tolist() if n else []

@@ -78,17 +78,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.n_patches is not None:
             config.preview.n_patches = args.n_patches
         result = preview(specs, config, run_id=args.run_id)
+        total_patches = sum(slide.patch_count for slide in result.slides)
+        print(
+            f"status={result.status} slides={len(result.slides)} "
+            f"planned_patches={total_patches} "
+            f"output={result.output_root} log={result.log_dir}"
+        )
     else:
         from extract_patch.pipeline import extract
 
         if args.output is not None:
             config.output.root = str(args.output)
         result = extract(specs, config, run_id=args.run_id)
+        print(
+            f"status={result.status} slides={len(result.slides)} "
+            f"output={result.output_root} log={result.log_dir}"
+        )
 
-    print(
-        f"status={result.status} slides={len(result.slides)} "
-        f"output={result.output_root} log={result.log_dir}"
-    )
     return 0 if result.status == "success" else 1
 
 
