@@ -11,6 +11,7 @@ from .circle import (
 )
 from .density import DensityHeuristic, density
 from .pipeline import HeuristicPipeline, pipeline, run_pipeline
+from .qmh import QmhCenterCircleHeuristic, qmh_center_circle
 from .serrated import SerratedOuterCircleHeuristic, serrated_outer_circle
 from .smartcyto import SmartCytoCircleHeuristic, smartcyto_circle
 
@@ -19,6 +20,7 @@ __all__ = [
     "DoubleCircleHeuristic",
     "Heuristic",
     "HeuristicPipeline",
+    "QmhCenterCircleHeuristic",
     "SerratedOuterCircleHeuristic",
     "SingleCircleHeuristic",
     "SmartCytoCircleHeuristic",
@@ -27,6 +29,7 @@ __all__ = [
     "double_circle",
     "get_heuristic",
     "pipeline",
+    "qmh_center_circle",
     "register",
     "registry",
     "run_pipeline",

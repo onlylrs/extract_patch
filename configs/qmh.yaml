@@ -1,0 +1,52 @@
+reader:
+  backend: auto
+  fallback: openslide
+  thumbnail_width: 2048
+
+heuristic_pipe:
+  - qmh_center_circle
+
+heuristics:
+  qmh_center_circle:
+    min_confidence: 0.55
+    min_canvas_aspect: 0.30
+    max_canvas_aspect: 0.60
+    center_x_fraction: 0.50
+    center_y_fraction: 0.50
+    radius_fraction: 0.56
+    center_search_fraction: 0.12
+    center_step_fraction: 0.03
+    radius_search_fraction: 0.04
+    radius_step_fraction: 0.02
+    core_radius_ratio: 1.0
+    min_fit_contrast: 0.004
+    strong_fit_contrast: 0.04
+    fixture_black_threshold: 70
+    fixture_margin_fraction: 0.025
+
+post_filter_pipe:
+  - nonempty
+
+post_filters:
+  nonempty:
+    max_analysis_dimension: 320
+    background_sigma_ratio: 0.035
+    local_color_delta: 3.0
+    min_local_color_fraction: 0.001
+    min_laplacian_std: 1.9
+
+patching:
+  level: 0
+  mpp: 0.5
+  patch_size: 600
+  output_size: 600
+  stride: 600
+  min_region_fraction: 0.10
+  inclusion: fraction
+
+output:
+  root: /jhcnas6/Cytology/Private/QMH/patches
+  mode: tar
+  jpeg_quality: 90
+  tar_preview: true
+  tar_preview_n: 20
