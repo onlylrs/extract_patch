@@ -17,8 +17,10 @@ patching:
 
 output:
   root: outputs/patches
-  mode: jpeg
-  jpeg_quality: 90
+  mode: tar
+  jpeg_quality: 95
+  tar_preview: true
+  tar_preview_n: 20
 
 parallel:
   slide_workers: 1
