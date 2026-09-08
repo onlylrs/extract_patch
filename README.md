@@ -75,8 +75,11 @@ patches/
     └── ...
 ```
 
-TAR 模式可通过 `output.tar_preview: true` 在每个 `slide_id/preview/` 中额外保存
+TAR 模式可通过 `output.tar_preview: true` 在每个 `slide_id/sample/` 中额外保存
 `output.tar_preview_n` 张随机 JPEG（默认 20），无需解压分片即可浏览。
+
+每张 WSI 成功完成后，会在对应的 `slide_id/` 中写入 `index.json`。其中 patch
+按 plan 顺序连续编号；TAR 模式的每项还会记录所在的 shard。
 
 每次运行只保留一个 `logs/<run_id>.log`。全部成功后自动清理临时恢复状态；仅在失败时，才会在隐藏的 `logs/.state/<run_id>/` 中保留 manifest 和失败信息用于重试。也可选择PNG、只生成坐标或 TAR 分片输出。
 

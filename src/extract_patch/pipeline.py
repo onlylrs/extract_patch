@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+import os
+import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, nullcontext
@@ -33,6 +36,39 @@ def _read_patch(reader, plan: PatchPlan) -> Image.Image:
     return image.convert("RGB")
 
 
+def _write_patch_index(
+    output_dir: Path,
+    outputs_by_plan_index: dict[int, str],
+    *,
+    tar_mode: bool,
+) -> None:
+    patches = []
+    for index, (_plan_index, output) in enumerate(sorted(outputs_by_plan_index.items())):
+        if tar_mode:
+            shard, name = output.split("/", 1)
+            patches.append({"index": index, "name": name, "shard": shard})
+        else:
+            patches.append({"index": index, "name": output})
+
+    payload = {"patch_count": len(patches), "patches": patches}
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".index-",
+        suffix=".json.tmp",
+        dir=output_dir,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output_dir / "index.json")
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _extract_batches(
     spec: SlideSpec,
     active_spec: SlideSpec,
@@ -41,7 +77,7 @@ def _extract_batches(
     sink: PatchSink,
     logger: RunLogger,
     reader_config,
-) -> tuple[int, int, list[str], dict[str, float]]:
+) -> tuple[int, int, list[str], dict[str, float], dict[int, str]]:
     worker_count = max(1, min(config.parallel.read_workers_per_slide, len(plans) or 1))
     estimated_bytes = max(1, config.patching.output_size**2 * 3)
     byte_limited = max(1, config.parallel.max_inflight_bytes // estimated_bytes)
@@ -49,6 +85,7 @@ def _extract_batches(
     errors: list[str] = []
     success = 0
     filtered = 0
+    outputs_by_plan_index: dict[int, str] = {}
     timings = {"read": 0.0, "encode": 0.0, "write": 0.0}
     timings["max_inflight_patches"] = float(batch_size)
     completed = logger.completed_outputs(spec.slide_id)
@@ -103,6 +140,7 @@ def _extract_batches(
                                 "skipped",
                             ),
                         )
+                        outputs_by_plan_index[plan.index] = expected
                         success += 1
                         continue
                     pending_reads[read_executor.submit(read_with_pool, plan)] = plan
@@ -199,6 +237,7 @@ def _extract_batches(
                                 "success",
                             ),
                         )
+                        outputs_by_plan_index[plan.index] = output
                         success += 1
                     except FileExistsError as exc:
                         target = sink.output_dir / encoded_name
@@ -215,6 +254,7 @@ def _extract_batches(
                                     "skipped",
                                 ),
                             )
+                            outputs_by_plan_index[plan.index] = encoded_name
                             success += 1
                             continue
                         message = f"write {plan.x},{plan.y}: {exc}"
@@ -237,7 +277,7 @@ def _extract_batches(
                         )
                 timings["write"] += time.perf_counter() - write_started
     timings["filtered_patches"] = float(filtered)
-    return success, filtered, errors, timings
+    return success, filtered, errors, timings, outputs_by_plan_index
 
 
 def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> SlideResult:
@@ -275,7 +315,7 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
             slide_output = Path(config.output.root) / spec.slide_id
             sink = create_sink(config.output, slide_output)
             with sink:
-                count, filtered, errors, timings = _extract_batches(
+                count, filtered, errors, timings, outputs_by_plan_index = _extract_batches(
                     spec,
                     active_spec,
                     plans,
@@ -289,6 +329,12 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
                     f"{len(errors)} patch errors; completed {count}+{filtered} filtered/"
                     f"{len(plans)}"
                     + (f"; first: {errors[0]}" if errors else "")
+                )
+            if config.output.mode != "none":
+                _write_patch_index(
+                    slide_output,
+                    outputs_by_plan_index,
+                    tar_mode=config.output.mode == "tar",
                 )
             elapsed = time.perf_counter() - started
             result = SlideResult(

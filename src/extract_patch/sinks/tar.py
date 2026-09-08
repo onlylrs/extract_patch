@@ -38,20 +38,20 @@ def _write_preview_files(
     output_dir: Path,
     selected: list[tuple[str, bytes]],
 ) -> list[Path]:
-    preview_dir = output_dir / "preview"
-    preview_dir.mkdir(parents=True, exist_ok=True)
+    sample_dir = output_dir / "sample"
+    sample_dir.mkdir(parents=True, exist_ok=True)
     selected_names = {name for name, _data in selected}
-    for existing in preview_dir.glob("*.jpg"):
+    for existing in sample_dir.glob("*.jpg"):
         if existing.name not in selected_names:
             existing.unlink()
 
     outputs = []
     for name, data in selected:
-        destination = preview_dir / name
+        destination = sample_dir / name
         fd, temporary_name = tempfile.mkstemp(
             prefix=f".{name}-",
             suffix=".tmp",
-            dir=preview_dir,
+            dir=sample_dir,
         )
         temporary = Path(temporary_name)
         try:
