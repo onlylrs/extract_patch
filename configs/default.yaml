@@ -9,9 +9,9 @@ heuristic_pipe:
 patching:
   level: 0
   mpp: 0.5
-  patch_size: 1200
-  output_size: 1200
-  stride: 1200
+  patch_size: 600
+  output_size: 600
+  stride: 600
   min_region_fraction: 0.10
   inclusion: fraction
 
