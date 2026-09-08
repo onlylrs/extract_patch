@@ -35,12 +35,25 @@ def _open(module: ModuleType, path: Path) -> Any:
     raise AttributeError("ASlide module does not expose a supported slide constructor")
 
 
+def _enable_color_correction(slide: Any) -> None:
+    method = getattr(slide, "apply_color_correction", None)
+    if method is None:
+        return
+    try:
+        method(True, "Real")
+    except NotImplementedError:
+        # ASlide exposes the common API for all formats, including formats whose
+        # backend does not provide color correction.
+        return
+
+
 class ASlideReader(ReaderBase):
     def __init__(self, path: str | Path, *, module: ModuleType | None = None) -> None:
         self.path = Path(path)
         self._slide = _open(module or _load_aslide(), self.path)
         self._closed = False
         try:
+            _enable_color_correction(self._slide)
             self._metadata = normalized_metadata(self._slide, "aslide")
         except Exception:
             self.close()

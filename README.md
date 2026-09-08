@@ -46,6 +46,9 @@ Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.
 
 默认使用最清晰的level0, mpp默认对齐到0.5 (upsample会使用LANCZOS插值)，patch size conventionally: 1200/600取决于器官。
 
+使用 ASlide backend 时会自动启用 `Real` color correction；该设置同时作用于
+thumbnail、preview 和正式提取的 patch。ASlide 不支持色彩校正的格式保持原始颜色。
+
 ## 正式提取
 
 ```bash
