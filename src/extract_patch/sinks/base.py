@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,10 @@ class EncodedPatch:
 
 def patch_stem(plan: PatchPlan) -> str:
     """Return a stable, coordinate-bearing patch identifier."""
-    return f"{plan.x}_{plan.y}_{plan.output_size}"
+    if plan.mpp is None or not math.isfinite(plan.mpp) or plan.mpp <= 0:
+        raise ValueError("Patch MPP is required for canonical patch filenames")
+    mpp = format(plan.mpp, ".12g")
+    return f"x{plan.x}_y{plan.y}_mpp{mpp}_px{plan.output_size}"
 
 
 def prepare_image(image: Image.Image, plan: PatchPlan) -> Image.Image:

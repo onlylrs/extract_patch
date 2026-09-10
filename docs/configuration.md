@@ -14,8 +14,8 @@
 - `parallel`：slide/read/encode/write workers 以及 inflight 上限。
 - `logging`、`preview`：默认输出位置。
 
-`./run_extract.sh --show-config` 可显示完整 resolved config；
-`./run_extract.sh --inspect <WSI>` 只解析输入和配置，不打开 WSI 或写 patch。
+`./run_extract.sh --show-config` 会把完整 resolved config 写入启动时打印的日志文件；
+`./run_extract.sh --inspect <WSI>` 只解析输入和配置，不打开 WSI 或写 patch，结果同样写入日志。
 
 预设：
 

@@ -2,8 +2,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mode="auto"
-foreground_action=0
 output_root=""
 run_id=""
 input_list=""
@@ -12,15 +10,13 @@ args=()
 while (($#)); do
     case "$1" in
         --foreground)
-            mode="foreground"
+            echo "--foreground is deprecated; run_extract.sh always uses nohup" >&2
             shift
             ;;
         --background)
-            mode="background"
             shift
             ;;
-        --preview|--inspect|--show-config)
-            foreground_action=1
+        --preview|--center-preview|--inspect|--show-config)
             args+=("$1")
             shift
             ;;
@@ -77,40 +73,27 @@ if [[ -n "$output_root" ]]; then
     mkdir -p "$output_root"
 fi
 
-if [[ "$mode" == "foreground" || ("$mode" == "auto" && "$foreground_action" -eq 1) ]]; then
-    exec python3 "${ROOT}/extract_patches.py" "${args[@]}"
-fi
-
 mkdir -p "${ROOT}/logs"
-if [[ -n "$run_id" ]]; then
-    safe_run_id="${run_id//\//_}"
-    log_path="${ROOT}/logs/${safe_run_id}.log"
-    nohup env \
-        EXTRACT_PATCH_STDOUT_LOGGED=1 \
-        EXTRACT_PATCH_LOG_PATH="$log_path" \
-        python3 "${ROOT}/extract_patches.py" "${args[@]}" \
-        > "$log_path" 2>&1 < /dev/null &
-    pid=$!
-else
+if [[ -z "$run_id" ]]; then
     input_name="${input_list##*/}"
     input_name="${input_name%.*}"
     input_name="${input_name:-extract}"
     input_name="${input_name// /_}"
     timestamp="$(date '+%Y%m%d_%H%M%S')"
-    (
-        child_run_id="${input_name}_${BASHPID}_${timestamp}"
-        child_log_path="${ROOT}/logs/${child_run_id}.log"
-        exec nohup env \
-            EXTRACT_PATCH_STDOUT_LOGGED=1 \
-            EXTRACT_PATCH_LOG_PATH="$child_log_path" \
-            python3 "${ROOT}/extract_patches.py" "${args[@]}" \
-            --run-id "$child_run_id" \
-            > "$child_log_path" 2>&1
-    ) < /dev/null &
-    pid=$!
-    run_id="${input_name}_${pid}_${timestamp}"
-    log_path="${ROOT}/logs/${run_id}.log"
+    run_id="${input_name}_$$_${timestamp}"
+    args+=(--run-id "$run_id")
 fi
+safe_run_id="${run_id//\//_}"
+log_path="${ROOT}/logs/${safe_run_id}.log"
+nohup env \
+    EXTRACT_PATCH_STDOUT_LOGGED=1 \
+    EXTRACT_PATCH_LOG_PATH="$log_path" \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    python3 "${ROOT}/extract_patches.py" "${args[@]}" \
+    > "$log_path" 2>&1 < /dev/null &
+pid=$!
 disown "$pid" 2>/dev/null || true
 
 echo "Started background extraction"

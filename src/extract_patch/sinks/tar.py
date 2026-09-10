@@ -41,9 +41,10 @@ def _write_preview_files(
     sample_dir = output_dir / "sample"
     sample_dir.mkdir(parents=True, exist_ok=True)
     selected_names = {name for name, _data in selected}
-    for existing in sample_dir.glob("*.jpg"):
-        if existing.name not in selected_names:
-            existing.unlink()
+    for pattern in ("*.jpg", "*.jpeg"):
+        for existing in sample_dir.glob(pattern):
+            if existing.name not in selected_names:
+                existing.unlink()
 
     outputs = []
     for name, data in selected:
@@ -77,10 +78,14 @@ def generate_tar_preview(
     """Create a deterministic random JPEG preview from existing TAR shards."""
     output_dir = Path(output_dir)
     heap = []
-    for shard in sorted(output_dir.glob("shard-*.tar")):
+    seen_names: set[str] = set()
+    for shard in sorted(output_dir.glob(f"{output_dir.name}_*.tar")):
         with tarfile.open(shard, mode="r") as archive:
             for member in archive:
                 if member.isfile() and member.name.lower().endswith((".jpg", ".jpeg")):
+                    if member.name in seen_names:
+                        continue
+                    seen_names.add(member.name)
                     _consider_preview(
                         heap,
                         count,
@@ -100,6 +105,8 @@ def generate_tar_preview(
 
 class TarSink(PatchSink):
     """Sequential, atomic WebDataset-style tar shard writer."""
+
+    extension = ".jpeg"
 
     def __init__(
         self,
@@ -123,11 +130,15 @@ class TarSink(PatchSink):
         self.preview_seed = preview_seed
         self._preview_heap = []
         self.overwrite = overwrite
-        existing = sorted(self.output_dir.glob("shard-*.tar"))
-        self._shard_index = 0
+        self._shard_prefix = self.output_dir.name
+        existing = sorted(self.output_dir.glob(f"{self._shard_prefix}_*.tar"))
+        self._shard_index = 1
         if existing and not overwrite:
             try:
-                self._shard_index = max(int(path.stem.rsplit("-", 1)[1]) for path in existing) + 1
+                self._shard_index = max(
+                    int(path.stem.removeprefix(f"{self._shard_prefix}_"))
+                    for path in existing
+                ) + 1
             except (IndexError, ValueError) as exc:
                 raise ValueError(f"Invalid existing shard name in {self.output_dir}") from exc
         self._count = 0
@@ -141,10 +152,10 @@ class TarSink(PatchSink):
         stream = BytesIO()
         image = prepare_image(image, plan)
         image.convert("RGB").save(stream, format="JPEG", quality=self.jpeg_quality)
-        return EncodedPatch(patch_stem(plan) + ".jpg", stream.getvalue())
+        return EncodedPatch(patch_stem(plan) + ".jpeg", stream.getvalue())
 
     def _open_shard(self) -> None:
-        final = self.output_dir / f"shard-{self._shard_index:06d}.tar"
+        final = self.output_dir / f"{self._shard_prefix}_{self._shard_index:04d}.tar"
         if final.exists() and not self.overwrite:
             raise FileExistsError(final)
         fd, temporary_name = tempfile.mkstemp(
@@ -207,7 +218,7 @@ class TarSink(PatchSink):
                     encoded.data,
                     self.preview_seed,
                 )
-            shard_name = f"shard-{self._shard_index:06d}.tar"
+            shard_name = f"{self._shard_prefix}_{self._shard_index:04d}.tar"
             self._count += 1
             if self._count >= self.shard_max_count:
                 self._finish_shard()

@@ -31,7 +31,7 @@ class ImageFileSink(PatchSink):
 
     @property
     def extension(self) -> str:
-        return ".jpg" if self.image_format == "jpeg" else ".png"
+        return ".jpeg" if self.image_format == "jpeg" else ".png"
 
     def encode(self, image: Image.Image, plan: PatchPlan) -> EncodedPatch:
         stream = BytesIO()

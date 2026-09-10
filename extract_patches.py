@@ -18,7 +18,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-root", type=Path, help="Root for relative paths in TXT")
     parser.add_argument("--config", type=Path, help="YAML or JSON config")
     parser.add_argument("--output", type=Path, help="Override output root")
-    parser.add_argument("--preview", action="store_true", help="Only save contour and sample patches")
+    preview_group = parser.add_mutually_exclusive_group()
+    preview_group.add_argument(
+        "--preview",
+        action="store_true",
+        help="Only save contour and sample patches",
+    )
+    preview_group.add_argument(
+        "--center-preview",
+        action="store_true",
+        help="Only save center-level thumbnail and mask previews",
+    )
     parser.add_argument("--n-patches", type=int, help="Random preview patches per WSI (default: 8)")
     parser.add_argument("--inspect", action="store_true", help="Resolve inputs without opening slides")
     parser.add_argument("--show-config", action="store_true", help="Print resolved config and exit")
@@ -70,7 +80,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return 0
 
-    if args.preview:
+    if args.center_preview:
+        from extract_patch.preview import center_preview
+
+        if args.output is not None:
+            config.output.root = str(args.output)
+        result = center_preview(specs, config, run_id=args.run_id)
+        print(
+            f"status={result.status} slides={len(result.slides)} "
+            f"output={result.output_root} log={result.log_dir}"
+        )
+    elif args.preview:
         from extract_patch.preview import preview
 
         if args.output is not None:
@@ -99,4 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("Interrupted; all WSI workers were stopped", file=sys.stderr)
+        raise SystemExit(130)

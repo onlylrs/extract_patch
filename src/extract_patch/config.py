@@ -48,7 +48,7 @@ class OutputConfig:
 
 @dataclass
 class ParallelConfig:
-    slide_workers: int = 1
+    slide_workers: int = 4
     read_workers_per_slide: int = 4
     encode_workers: int = 2
     writer_workers: int = 2

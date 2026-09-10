@@ -1,8 +1,177 @@
 from __future__ import annotations
 
+import ctypes
+import errno
+import multiprocessing as mp
+import os
+import signal
 import threading
+import traceback
 from contextlib import contextmanager
-from typing import Iterator
+from multiprocessing.connection import Connection, wait
+from typing import Any, Callable, Iterable, Iterator
+
+
+class WorkerSystemError(RuntimeError):
+    """A worker process exited or raised outside normal per-WSI handling."""
+
+
+def _terminate_if_parent_dies() -> None:
+    """Ask Linux to terminate this worker even if the parent receives SIGKILL."""
+    parent_pid = os.getppid()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, int(signal.SIGTERM)) != 0:  # PR_SET_PDEATHSIG
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
+def raise_if_system_error(exc: BaseException) -> None:
+    """Promote host-level failures so the supervisor stops the whole run."""
+    if isinstance(exc, MemoryError):
+        raise exc
+    if isinstance(exc, OSError) and exc.errno in {
+        errno.ENFILE,
+        errno.EMFILE,
+        errno.ENOMEM,
+        errno.ENOSPC,
+    }:
+        raise exc
+
+
+def _process_worker_loop(
+    tasks: list[tuple[int, Any]],
+    results: Connection,
+    worker: Callable[..., Any],
+    worker_args: tuple[Any, ...],
+) -> None:
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _terminate_if_parent_dies()
+    try:
+        for index, item in tasks:
+            try:
+                results.send(("result", index, worker(item, *worker_args)))
+            except Exception:
+                results.send(("error", index, traceback.format_exc()))
+                return
+    finally:
+        results.close()
+
+
+def _stop_processes(processes: list[mp.Process], timeout: float = 5.0) -> None:
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join(timeout=timeout)
+    for process in processes:
+        if process.is_alive():
+            process.kill()
+    for process in processes:
+        process.join()
+
+
+def process_map(
+    worker: Callable[..., Any],
+    items: Iterable[Any],
+    *worker_args: Any,
+    max_workers: int,
+    process_name: str,
+    on_result: Callable[[Any], None] | None = None,
+) -> list[Any]:
+    """Run WSI tasks under one parent that always reaps every child process."""
+    indexed_items = list(enumerate(items))
+    if not indexed_items:
+        return []
+    worker_count = max(1, min(int(max_workers), len(indexed_items)))
+    context = mp.get_context("fork")
+    task_batches: list[list[tuple[int, Any]]] = [[] for _ in range(worker_count)]
+    for position, item in enumerate(indexed_items):
+        task_batches[position % worker_count].append(item)
+    processes: list[mp.Process] = []
+    receivers: list[Connection] = []
+    senders: list[Connection] = []
+    for index, batch in enumerate(task_batches):
+        receiver, sender = context.Pipe(duplex=False)
+        receivers.append(receiver)
+        senders.append(sender)
+        processes.append(
+            context.Process(
+                target=_process_worker_loop,
+                args=(batch, sender, worker, worker_args),
+                name=f"{process_name}-{index + 1}",
+            )
+        )
+
+    previous_handlers = {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    def interrupt_parent(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    completed: dict[int, Any] = {}
+    started_processes: list[mp.Process] = []
+    try:
+        for signum in previous_handlers:
+            signal.signal(signum, interrupt_parent)
+        for process in processes:
+            process.start()
+            started_processes.append(process)
+        for sender in senders:
+            sender.close()
+        active_receivers = set(receivers)
+        while len(completed) < len(indexed_items):
+            ready = wait(active_receivers, timeout=0.5) if active_receivers else []
+            if not ready:
+                failed = [
+                    process
+                    for process in processes
+                    if process.exitcode not in (None, 0)
+                ]
+                if failed:
+                    detail = ", ".join(
+                        f"{process.name} exitcode={process.exitcode}" for process in failed
+                    )
+                    raise WorkerSystemError(f"Worker process failed: {detail}")
+                if not any(process.is_alive() for process in processes):
+                    raise WorkerSystemError("All workers exited before returning every result")
+                continue
+            for receiver in ready:
+                try:
+                    kind, index, payload = receiver.recv()
+                except EOFError:
+                    receiver.close()
+                    active_receivers.discard(receiver)
+                    continue
+                if kind == "error":
+                    raise WorkerSystemError(
+                        f"Worker task {index} escaped its WSI handler: {payload}"
+                    )
+                completed[index] = payload
+                if on_result is not None:
+                    on_result(payload)
+
+        for process in processes:
+            process.join()
+        failed = [process for process in processes if process.exitcode != 0]
+        if failed:
+            detail = ", ".join(
+                f"{process.name} exitcode={process.exitcode}" for process in failed
+            )
+            raise WorkerSystemError(f"Worker process failed during shutdown: {detail}")
+        return [completed[index] for index, _item in indexed_items]
+    except BaseException:
+        _stop_processes(started_processes)
+        raise
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        for connection in receivers + senders:
+            connection.close()
 
 
 class InflightBudget:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import tarfile
 import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -16,14 +17,29 @@ import numpy as np
 from PIL import Image
 
 from .config import AppConfig
+from .concurrency import process_map, raise_if_system_error
 from .filters import FilterDecision, PatchFilterPipeline
 from .heuristics import HeuristicPipeline
-from .models import PatchPlan, PatchRecord, RunResult, SlideResult, SlideSpec
+from .models import PatchPlan, PatchRecord, RunResult, SlideResult, SlideSpec, SlideWorkResult
 from .planner import effective_patching, plan_patches
 from .readers import open_reader, stage_slide
-from .reporting import RunLogger, make_run_id
-from .sinks import PatchSink, create_sink, patch_stem
+from .reporting import RunLogger, make_run_id, save_center_previews
+from .sinks import PatchSink, create_sink, generate_tar_preview, patch_stem
 from .sinks.base import EncodedPatch, prepare_image
+
+
+class _PatchCollector:
+    """Collect one WSI's manifest entries inside its worker process."""
+
+    def __init__(self, completed: dict[str, str]) -> None:
+        self.completed = completed
+        self.records: list[PatchRecord] = []
+
+    def completed_outputs(self, _slide_id: str) -> dict[str, str]:
+        return self.completed
+
+    def record_patch(self, _slide_id: str, record: PatchRecord) -> None:
+        self.records.append(record)
 
 
 def _expected_name(sink: PatchSink, plan: PatchPlan) -> str:
@@ -34,6 +50,63 @@ def _expected_name(sink: PatchSink, plan: PatchPlan) -> str:
 def _read_patch(reader, plan: PatchPlan) -> Image.Image:
     image = reader.read_region((plan.x, plan.y), plan.level, (plan.read_size, plan.read_size))
     return image.convert("RGB")
+
+
+def _discover_completed_outputs(output_dir: Path, mode: str) -> dict[str, str]:
+    if not output_dir.is_dir():
+        return {}
+    if mode in {"jpeg", "png"}:
+        extension = ".jpeg" if mode == "jpeg" else ".png"
+        return {
+            path.name: path.name
+            for path in output_dir.glob(f"*{extension}")
+            if path.is_file() and path.stat().st_size > 0
+        }
+    if mode != "tar":
+        return {}
+    completed: dict[str, str] = {}
+    for shard in sorted(output_dir.glob(f"{output_dir.name}_*.tar")):
+        if not shard.is_file() or shard.stat().st_size <= 0:
+            continue
+        with tarfile.open(shard, mode="r") as archive:
+            for member in archive:
+                if member.isfile() and member.name.lower().endswith((".jpg", ".jpeg")):
+                    completed.setdefault(member.name, f"{shard.name}/{member.name}")
+    return completed
+
+
+def _complete_index_patch_count(output_dir: Path, mode: str) -> int | None:
+    index_path = output_dir / "index.json"
+    if mode == "none" or not index_path.is_file():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        patches = payload["patches"]
+        patch_count = int(payload["patch_count"])
+        if patch_count != len(patches):
+            return None
+        for patch in patches:
+            name = patch["name"]
+            target = output_dir / patch["shard"] if mode == "tar" else output_dir / name
+            if not target.is_file() or target.stat().st_size <= 0:
+                return None
+        return patch_count
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return None
+
+
+def _preview_is_complete(config: AppConfig, slide_id: str, patch_count: int) -> bool:
+    preview_root = Path(config.output.root).parent / "preview"
+    thumbnail = preview_root / "thumbnail" / f"{slide_id}.jpeg"
+    mask = preview_root / "mask" / f"{slide_id}.jpg"
+    if not all(path.is_file() and path.stat().st_size > 0 for path in (thumbnail, mask)):
+        return False
+    if config.output.mode == "tar" and config.output.tar_preview:
+        sample_dir = Path(config.output.root) / slide_id / "sample"
+        expected = min(config.output.tar_preview_n, patch_count)
+        actual = sum(1 for path in sample_dir.glob("*.jpeg") if path.is_file())
+        return actual >= expected
+    return True
 
 
 def _write_patch_index(
@@ -75,7 +148,7 @@ def _extract_batches(
     plans: list[PatchPlan],
     config: AppConfig,
     sink: PatchSink,
-    logger: RunLogger,
+    logger: _PatchCollector,
     reader_config,
 ) -> tuple[int, int, list[str], dict[str, float], dict[int, str]]:
     worker_count = max(1, min(config.parallel.read_workers_per_slide, len(plans) or 1))
@@ -126,8 +199,9 @@ def _extract_batches(
                 pending_reads: dict[Future, PatchPlan] = {}
                 for plan in batch:
                     expected = _expected_name(sink, plan)
-                    relative = f"{spec.slide_id}/{expected}" if expected else ""
-                    if relative and relative in completed:
+                    completed_output = completed.get(expected)
+                    if completed_output is not None:
+                        relative = f"{spec.slide_id}/{completed_output}"
                         logger.record_patch(
                             spec.slide_id,
                             PatchRecord(
@@ -140,7 +214,7 @@ def _extract_batches(
                                 "skipped",
                             ),
                         )
-                        outputs_by_plan_index[plan.index] = expected
+                        outputs_by_plan_index[plan.index] = completed_output
                         success += 1
                         continue
                     pending_reads[read_executor.submit(read_with_pool, plan)] = plan
@@ -155,6 +229,7 @@ def _extract_batches(
                             encode_executor.submit(filter_and_encode, image, plan)
                         ] = plan
                     except Exception as exc:
+                        raise_if_system_error(exc)
                         message = f"read {plan.x},{plan.y}: {type(exc).__name__}: {exc}"
                         errors.append(message)
                         logger.record_patch(
@@ -201,6 +276,7 @@ def _extract_batches(
                             encoded.name,
                         )
                     except Exception as exc:
+                        raise_if_system_error(exc)
                         message = f"encode {plan.x},{plan.y}: {type(exc).__name__}: {exc}"
                         errors.append(message)
                         logger.record_patch(
@@ -260,6 +336,7 @@ def _extract_batches(
                         message = f"write {plan.x},{plan.y}: {exc}"
                         errors.append(message)
                     except Exception as exc:
+                        raise_if_system_error(exc)
                         message = f"write {plan.x},{plan.y}: {type(exc).__name__}: {exc}"
                         errors.append(message)
                         logger.record_patch(
@@ -280,7 +357,12 @@ def _extract_batches(
     return success, filtered, errors, timings, outputs_by_plan_index
 
 
-def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> SlideResult:
+def _extract_slide(
+    item: tuple[SlideSpec, dict[str, str]],
+    config: AppConfig,
+) -> SlideWorkResult:
+    spec, completed = item
+    collector = _PatchCollector(completed)
     started = time.perf_counter()
     cv2.setNumThreads(config.parallel.opencv_threads)
     staging = (
@@ -321,7 +403,7 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
                     plans,
                     config,
                     sink,
-                    logger,
+                    collector,
                     reader_config,
                 )
             if errors or count + filtered != len(plans):
@@ -336,6 +418,19 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
                     outputs_by_plan_index,
                     tar_mode=config.output.mode == "tar",
                 )
+                if config.output.mode == "tar" and config.output.tar_preview:
+                    generate_tar_preview(
+                        slide_output,
+                        count=config.output.tar_preview_n,
+                        seed=config.output.tar_preview_seed,
+                    )
+                save_center_previews(
+                    thumbnail,
+                    decision,
+                    plans,
+                    Path(config.output.root).parent / "preview",
+                    spec.slide_id,
+                )
             elapsed = time.perf_counter() - started
             result = SlideResult(
                 slide_id=spec.slide_id,
@@ -343,6 +438,7 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
                 patch_count=count,
                 reader=metadata.reader,
                 heuristic=decision.name,
+                color_correction=metadata.properties.get("extract_patch.color_correction"),
                 elapsed_seconds=elapsed,
                 timings={
                     "segmentation": segment_time,
@@ -351,14 +447,14 @@ def _extract_slide(spec: SlideSpec, config: AppConfig, logger: RunLogger) -> Sli
                 },
             )
     except Exception as exc:
+        raise_if_system_error(exc)
         result = SlideResult(
             slide_id=spec.slide_id,
             status="failed",
             elapsed_seconds=time.perf_counter() - started,
             error=f"{type(exc).__name__}: {exc}",
         )
-    logger.record_slide(result)
-    return result
+    return SlideWorkResult(result=result, patches=collector.records)
 
 
 def extract(
@@ -374,13 +470,59 @@ def extract(
     logger = RunLogger(Path(config.logging.root), run_id, config)
     logger.logger.info("Starting extraction for %d slides", len(specs))
     results_by_id: dict[str, SlideResult] = {}
-    with ThreadPoolExecutor(max_workers=config.parallel.slide_workers) as executor:
-        futures = {executor.submit(_extract_slide, spec, config, logger): spec for spec in specs}
-        for future in as_completed(futures):
-            result = future.result()
-            results_by_id[result.slide_id] = result
-    results = [results_by_id[spec.slide_id] for spec in specs]
-    summary = logger.finalize(results)
+    work_items: list[tuple[SlideSpec, dict[str, str]]] = []
+    try:
+        for spec in specs:
+            slide_output = output_root / spec.slide_id
+            patch_count = (
+                None
+                if config.output.overwrite
+                else _complete_index_patch_count(slide_output, config.output.mode)
+            )
+            if patch_count is not None and _preview_is_complete(
+                config, spec.slide_id, patch_count
+            ):
+                result = SlideResult(spec.slide_id, "skipped", patch_count=patch_count)
+                logger.record_slide(result)
+                results_by_id[spec.slide_id] = result
+                continue
+            completed = (
+                {}
+                if config.output.overwrite
+                else _discover_completed_outputs(slide_output, config.output.mode)
+            )
+            if completed:
+                logger.logger.info(
+                    "slide=%s resuming_from_outputs=%d mode=%s",
+                    spec.slide_id,
+                    len(completed),
+                    config.output.mode,
+                )
+            work_items.append((spec, completed))
+    except BaseException:
+        logger.abort("Failed while inspecting existing extraction outputs")
+        raise
+
+    def record_work_result(work_result: SlideWorkResult) -> None:
+        for record in work_result.patches:
+            logger.record_patch(work_result.result.slide_id, record)
+        logger.record_slide(work_result.result)
+        results_by_id[work_result.result.slide_id] = work_result.result
+
+    try:
+        process_map(
+            _extract_slide,
+            work_items,
+            config,
+            max_workers=config.parallel.slide_workers,
+            process_name="extract-wsi",
+            on_result=record_work_result,
+        )
+        results = [results_by_id[spec.slide_id] for spec in specs]
+        summary = logger.finalize(results)
+    except BaseException:
+        logger.abort("System-level extraction failure; all WSI workers were stopped")
+        raise
     return RunResult(
         run_id=run_id,
         status="success" if summary["status"] == "success" else "partial",

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,19 +95,37 @@ class RunLogger:
 
     def record_slide(self, result: SlideResult) -> None:
         with self._lock:
-            self.logger.info(
-                "slide=%s status=%s patches=%d reader=%s heuristic=%s elapsed=%.2fs error=%s",
+            if result.status == "failed":
+                log = self.logger.error
+            elif (result.color_correction or "").startswith("unavailable:"):
+                log = self.logger.warning
+            else:
+                log = self.logger.info
+            log(
+                "slide=%s status=%s patches=%d reader=%s heuristic=%s "
+                "color_correction=%s elapsed=%.2fs error=%s",
                 result.slide_id,
                 result.status,
                 result.patch_count,
                 result.reader or "-",
                 result.heuristic or "-",
+                result.color_correction or "-",
                 result.elapsed_seconds,
                 result.error or "-",
             )
             if result.status == "failed":
                 with self._failures.open("a", encoding="utf-8") as handle:
                     handle.write(f"{result.slide_id}\t{result.error or 'unknown error'}\n")
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._manifest_handle.closed:
+                self._manifest_handle.flush()
+                self._manifest_handle.close()
+
+    def abort(self, message: str) -> None:
+        self.logger.critical(message, exc_info=True)
+        self.close()
 
     def completed_outputs(self, slide_id: str) -> set[str]:
         with self._lock:
@@ -121,10 +140,7 @@ class RunLogger:
         return outputs
 
     def finalize(self, results: list[SlideResult]) -> dict[str, Any]:
-        with self._lock:
-            if not self._manifest_handle.closed:
-                self._manifest_handle.flush()
-                self._manifest_handle.close()
+        self.close()
         success = bool(results) and all(result.status in {"success", "skipped"} for result in results)
         summary = {
             "run_id": self.run_id,
@@ -153,12 +169,11 @@ class RunLogger:
         return summary
 
 
-def save_overlay(
+def _render_overlay(
     thumbnail: Image.Image,
     decision: HeuristicDecision,
     plans: list[PatchPlan],
-    destination: Path,
-) -> None:
+) -> Image.Image:
     image = np.asarray(thumbnail.convert("RGB"))
     result = image.copy()
     if decision.region is not None:
@@ -176,5 +191,62 @@ def save_overlay(
             width = plan.read_size * thumb_w / slide_w
             height = plan.read_size * thumb_h / slide_h
             draw.rectangle((x0, y0, x0 + width, y0 + height), outline=(255, 0, 0), width=1)
+    return output
+
+
+def save_overlay(
+    thumbnail: Image.Image,
+    decision: HeuristicDecision,
+    plans: list[PatchPlan],
+    destination: Path,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    output.save(destination, quality=92)
+    _render_overlay(thumbnail, decision, plans).save(destination, quality=92)
+
+
+def _save_image_atomic(
+    image: Image.Image,
+    destination: Path,
+    *,
+    image_format: str,
+    quality: int,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}-",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        image.save(temporary, format=image_format, quality=quality)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def save_center_previews(
+    thumbnail: Image.Image,
+    decision: HeuristicDecision,
+    plans: list[PatchPlan],
+    preview_root: Path,
+    slide_id: str,
+) -> None:
+    if decision.region is None:
+        raise ValueError("Cannot save a mask preview without a region mask")
+    _save_image_atomic(
+        thumbnail.convert("RGB"),
+        preview_root / "thumbnail" / f"{slide_id}.jpeg",
+        image_format="JPEG",
+        quality=92,
+    )
+    _save_image_atomic(
+        _render_overlay(thumbnail, decision, plans),
+        preview_root / "mask" / f"{slide_id}.jpg",
+        image_format="JPEG",
+        quality=92,
+    )

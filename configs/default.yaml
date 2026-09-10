@@ -23,7 +23,7 @@ output:
   tar_preview_n: 20
 
 parallel:
-  slide_workers: 1
+  slide_workers: 4
   read_workers_per_slide: 4
   encode_workers: 2
   writer_workers: 2

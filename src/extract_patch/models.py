@@ -55,6 +55,7 @@ class PatchPlan:
     read_size: int
     output_size: int
     region_fraction: float
+    mpp: float | None = None
 
 
 @dataclass(frozen=True)
@@ -76,9 +77,16 @@ class SlideResult:
     patch_count: int = 0
     reader: str | None = None
     heuristic: str | None = None
+    color_correction: str | None = None
     elapsed_seconds: float = 0.0
     error: str | None = None
     timings: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class SlideWorkResult:
+    result: SlideResult
+    patches: list[PatchRecord] = field(default_factory=list)
 
 
 @dataclass

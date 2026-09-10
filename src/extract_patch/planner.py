@@ -124,6 +124,7 @@ def _select(
             read_size=plan.read_size,
             output_size=plan.output_size,
             region_fraction=plan.region_fraction,
+            mpp=plan.mpp,
         )
         for index, plan in enumerate(selected)
     ]
@@ -154,6 +155,9 @@ def plan_patches(
     integral = IntegralRegion.from_region(region)
     downsample = metadata.level_downsamples[config.level]
     extent = config.patch_size * downsample
+    output_mpp = config.mpp
+    if output_mpp is None and metadata.mpp is not None:
+        output_mpp = metadata.mpp * downsample * config.patch_size / config.output_size
     candidates: list[PatchPlan] = []
     for x, y in grid_coordinates(
         metadata, config.level, config.patch_size, config.stride
@@ -175,6 +179,7 @@ def plan_patches(
                     read_size=config.patch_size,
                     output_size=config.output_size,
                     region_fraction=fraction,
+                    mpp=output_mpp,
                 )
             )
 

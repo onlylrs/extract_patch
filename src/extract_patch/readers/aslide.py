@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageCms
 
 from ..models import SlideMetadata
 from .base import Location, ReaderBase, Size, normalized_metadata, preserve_aspect, validate_size
@@ -35,16 +36,41 @@ def _open(module: ModuleType, path: Path) -> Any:
     raise AttributeError("ASlide module does not expose a supported slide constructor")
 
 
-def _enable_color_correction(slide: Any) -> None:
+def _openslide_color_transforms(slide: Any) -> tuple[Any | None, Any | None]:
+    backend = getattr(slide, "backend", None)
+    if backend is None:
+        backend = getattr(slide, "_backend", None)
+    source_profile = getattr(backend, "color_profile", None)
+    if source_profile is None:
+        return None, None
+    target_profile = ImageCms.createProfile("sRGB")
+    intent = ImageCms.getDefaultIntent(source_profile)
+    return (
+        ImageCms.buildTransform(source_profile, target_profile, "RGB", "RGB", intent, 0),
+        ImageCms.buildTransform(source_profile, target_profile, "RGBA", "RGBA", intent, 0),
+    )
+
+
+def _enable_color_correction(slide: Any) -> tuple[Any | None, Any | None, str]:
     method = getattr(slide, "apply_color_correction", None)
     if method is None:
-        return
+        return None, None, "unavailable:no-api"
     try:
         method(True, "Real")
     except NotImplementedError:
-        # ASlide exposes the common API for all formats, including formats whose
-        # backend does not provide color correction.
-        return
+        rgb_transform, rgba_transform = _openslide_color_transforms(slide)
+        if rgb_transform is None:
+            return None, None, "unavailable:no-icc-profile"
+        return rgb_transform, rgba_transform, "enabled:openslide-icc-to-srgb"
+    registry_entry = getattr(slide, "registry_entry", None)
+    format_id = getattr(registry_entry, "format_id", "native")
+    backend = getattr(slide, "backend", None)
+    info_method = getattr(backend, "get_color_correction_info", None)
+    if info_method is not None:
+        info = info_method()
+        if isinstance(info, dict) and not info.get("enabled", False):
+            return None, None, f"unavailable:aslide-real-not-enabled:{format_id}"
+    return None, None, f"enabled:aslide-real:{format_id}"
 
 
 class ASlideReader(ReaderBase):
@@ -53,8 +79,15 @@ class ASlideReader(ReaderBase):
         self._slide = _open(module or _load_aslide(), self.path)
         self._closed = False
         try:
-            _enable_color_correction(self._slide)
-            self._metadata = normalized_metadata(self._slide, "aslide")
+            (
+                self._rgb_color_transform,
+                self._rgba_color_transform,
+                self.color_correction,
+            ) = _enable_color_correction(self._slide)
+            metadata = normalized_metadata(self._slide, "aslide")
+            properties = dict(metadata.properties)
+            properties["extract_patch.color_correction"] = self.color_correction
+            self._metadata = replace(metadata, properties=properties)
         except Exception:
             self.close()
             raise
@@ -73,13 +106,23 @@ class ASlideReader(ReaderBase):
         image = method(size)
         if image is None:
             raise TypeError("ASlide thumbnail method did not return an image")
-        return preserve_aspect(image, size)
+        image = preserve_aspect(image, size)
+        return self._apply_color_transform(image)
 
     def read_region(self, location: Location, level: int, size: Size) -> Image.Image:
         # Both adapters deliberately pass level-0 coordinates through unchanged.
-        return self._slide.read_region(
+        image = self._slide.read_region(
             (int(location[0]), int(location[1])), int(level), validate_size(size)
         )
+        return self._apply_color_transform(image)
+
+    def _apply_color_transform(self, image: Image.Image) -> Image.Image:
+        if image.mode == "RGBA" and self._rgba_color_transform is not None:
+            return ImageCms.applyTransform(image, self._rgba_color_transform)
+        if self._rgb_color_transform is not None:
+            rgb = image if image.mode == "RGB" else image.convert("RGB")
+            return ImageCms.applyTransform(rgb, self._rgb_color_transform)
+        return image
 
     def close(self) -> None:
         if not self._closed:
