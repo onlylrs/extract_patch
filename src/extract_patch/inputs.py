@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from .models import SlideSpec
@@ -60,29 +60,33 @@ def resolve_slide(path: str | Path) -> SlideSpec:
     return SlideSpec(source=source, entrypoint=source, slide_id=source.stem, sidecars=sidecars)
 
 
-def parse_inputs(
+def _iter_input_values(
     value: str | Path | Sequence[str | Path],
-    *,
-    root: Path | None = None,
-) -> list[SlideSpec]:
-    raw_items: list[str | Path]
+) -> Iterator[str | Path]:
     if isinstance(value, (str, Path)):
         candidate = Path(value)
         if candidate.suffix.lower() == ".txt" and candidate.is_file():
-            raw_items = [
-                _strip_quotes(line)
-                for line in candidate.read_text(encoding="utf-8").splitlines()
-                if _strip_quotes(line)
-            ]
+            with candidate.open(encoding="utf-8") as handle:
+                for line in handle:
+                    item = _strip_quotes(line)
+                    if item:
+                        yield item
         else:
-            raw_items = [value]
+            yield value
     else:
-        raw_items = list(value)
+        yield from value
 
-    specs: list[SlideSpec] = []
+
+def iter_inputs(
+    value: str | Path | Sequence[str | Path],
+    *,
+    root: Path | None = None,
+) -> Iterator[SlideSpec]:
+    """Resolve inputs incrementally so large lists can start work immediately."""
     seen_entries: set[Path] = set()
     seen_ids: dict[str, Path] = {}
-    for item in raw_items:
+    resolved = 0
+    for item in _iter_input_values(value):
         path = Path(_strip_quotes(str(item)))
         if not path.is_absolute() and root is not None:
             path = root / path
@@ -96,7 +100,16 @@ def parse_inputs(
             )
         seen_entries.add(spec.entrypoint)
         seen_ids[spec.slide_id] = spec.entrypoint
-        specs.append(spec)
-    if not specs:
+        resolved += 1
+        yield spec
+    if not resolved:
         raise ValueError("No WSI inputs resolved")
-    return specs
+
+
+def parse_inputs(
+    value: str | Path | Sequence[str | Path],
+    *,
+    root: Path | None = None,
+) -> list[SlideSpec]:
+    """Resolve all inputs, retaining the original list-returning API."""
+    return list(iter_inputs(value, root=root))

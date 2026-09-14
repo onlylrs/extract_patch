@@ -4,6 +4,7 @@ import ctypes
 import errno
 import multiprocessing as mp
 import os
+import queue
 import signal
 import threading
 import traceback
@@ -41,7 +42,7 @@ def raise_if_system_error(exc: BaseException) -> None:
 
 
 def _process_worker_loop(
-    tasks: list[tuple[int, Any]],
+    tasks: Any,
     results: Connection,
     worker: Callable[..., Any],
     worker_args: tuple[Any, ...],
@@ -50,7 +51,11 @@ def _process_worker_loop(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _terminate_if_parent_dies()
     try:
-        for index, item in tasks:
+        while True:
+            task = tasks.get()
+            if task is None:
+                return
+            index, item = task
             try:
                 results.send(("result", index, worker(item, *worker_args)))
             except Exception:
@@ -81,26 +86,26 @@ def process_map(
     process_name: str,
     on_result: Callable[[Any], None] | None = None,
 ) -> list[Any]:
-    """Run WSI tasks under one parent that always reaps every child process."""
-    indexed_items = list(enumerate(items))
-    if not indexed_items:
+    """Run an iterable through a bounded process queue and reap every worker."""
+    item_iterator = iter(items)
+    try:
+        first_item = next(item_iterator)
+    except StopIteration:
         return []
-    worker_count = max(1, min(int(max_workers), len(indexed_items)))
+    worker_count = max(1, int(max_workers))
     context = mp.get_context("fork")
-    task_batches: list[list[tuple[int, Any]]] = [[] for _ in range(worker_count)]
-    for position, item in enumerate(indexed_items):
-        task_batches[position % worker_count].append(item)
+    task_queue = context.Queue(maxsize=worker_count * 2)
     processes: list[mp.Process] = []
     receivers: list[Connection] = []
     senders: list[Connection] = []
-    for index, batch in enumerate(task_batches):
+    for index in range(worker_count):
         receiver, sender = context.Pipe(duplex=False)
         receivers.append(receiver)
         senders.append(sender)
         processes.append(
             context.Process(
                 target=_process_worker_loop,
-                args=(batch, sender, worker, worker_args),
+                args=(task_queue, sender, worker, worker_args),
                 name=f"{process_name}-{index + 1}",
             )
         )
@@ -115,16 +120,45 @@ def process_map(
 
     completed: dict[int, Any] = {}
     started_processes: list[mp.Process] = []
+    next_item: Any = first_item
+    next_index = 0
+    submitted = 0
+    input_exhausted = False
+    sentinels_sent = 0
     try:
-        for signum in previous_handlers:
-            signal.signal(signum, interrupt_parent)
         for process in processes:
             process.start()
             started_processes.append(process)
+        for signum in previous_handlers:
+            signal.signal(signum, interrupt_parent)
         for sender in senders:
             sender.close()
         active_receivers = set(receivers)
-        while len(completed) < len(indexed_items):
+        while (
+            not input_exhausted
+            or len(completed) < submitted
+            or sentinels_sent < worker_count
+        ):
+            while not input_exhausted:
+                try:
+                    task_queue.put_nowait((next_index, next_item))
+                except queue.Full:
+                    break
+                submitted += 1
+                next_index += 1
+                try:
+                    next_item = next(item_iterator)
+                except StopIteration:
+                    input_exhausted = True
+            while input_exhausted and sentinels_sent < worker_count:
+                try:
+                    task_queue.put_nowait(None)
+                except queue.Full:
+                    break
+                sentinels_sent += 1
+
+            if len(completed) >= submitted and input_exhausted:
+                continue
             ready = wait(active_receivers, timeout=0.5) if active_receivers else []
             if not ready:
                 failed = [
@@ -163,7 +197,7 @@ def process_map(
                 f"{process.name} exitcode={process.exitcode}" for process in failed
             )
             raise WorkerSystemError(f"Worker process failed during shutdown: {detail}")
-        return [completed[index] for index, _item in indexed_items]
+        return [completed[index] for index in range(submitted)]
     except BaseException:
         _stop_processes(started_processes)
         raise
@@ -172,6 +206,8 @@ def process_map(
             signal.signal(signum, handler)
         for connection in receivers + senders:
             connection.close()
+        task_queue.cancel_join_thread()
+        task_queue.close()
 
 
 class InflightBudget:

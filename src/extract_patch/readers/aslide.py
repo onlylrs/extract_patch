@@ -12,6 +12,18 @@ from ..models import SlideMetadata
 from .base import Location, ReaderBase, Size, normalized_metadata, preserve_aspect, validate_size
 
 
+def _select_thumbnail_level(
+    level_dimensions: tuple[tuple[int, int], ...],
+    requested: Size,
+) -> int:
+    fitting = [
+        level
+        for level, dimensions in enumerate(level_dimensions)
+        if dimensions[0] <= requested[0] and dimensions[1] <= requested[1]
+    ]
+    return fitting[0] if fitting else len(level_dimensions) - 1
+
+
 def _load_aslide() -> ModuleType:
     errors: list[ImportError] = []
     for module_name in ("Aslide", "aslide"):
@@ -106,6 +118,15 @@ class ASlideReader(ReaderBase):
         image = method(size)
         if image is None:
             raise TypeError("ASlide thumbnail method did not return an image")
+        expected_aspect = self.metadata.dimensions[0] / self.metadata.dimensions[1]
+        actual_aspect = image.width / image.height
+        aspect_error = abs(actual_aspect / expected_aspect - 1.0)
+        if aspect_error > 0.02:
+            level = _select_thumbnail_level(self.metadata.level_dimensions, size)
+            dimensions = self.metadata.level_dimensions[level]
+            image = self._slide.read_region((0, 0), level, dimensions)
+            if image is None:
+                raise TypeError("ASlide read_region did not return a thumbnail image")
         image = preserve_aspect(image, size)
         return self._apply_color_transform(image)
 
@@ -134,4 +155,4 @@ class ASlideReader(ReaderBase):
 
 ASlide = ASlideReader
 
-__all__ = ["ASlide", "ASlideReader"]
+__all__ = ["ASlide", "ASlideReader", "_select_thumbnail_level"]

@@ -193,7 +193,10 @@ class SerratedOuterCircleHeuristic(Heuristic):
             "outer_artifact_fraction": outer_score,
             "outer_radius": float(min_dim * 0.50),
         }
-        if outer_score < float(cfg.get("min_outer_artifact_fraction", 0.025)):
+        if (
+            outer_score < float(cfg.get("min_outer_artifact_fraction", 0.025))
+            or outer_score > float(cfg.get("max_outer_artifact_fraction", 0.45))
+        ):
             return image, None, metrics
 
         # Blue/cyan stain separates the cell-rich inner pad from the green scanner
@@ -215,6 +218,16 @@ class SerratedOuterCircleHeuristic(Heuristic):
             image, artifact, prior_x, prior_y, cfg
         )
         metrics.update(radial_metrics)
+        if (
+            float(radial_metrics.get("inner_radial_score", 0.0))
+            < float(cfg.get("min_inner_radial_score", 0.0))
+            or float(radial_metrics.get("inner_radial_positive_support", 0.0))
+            < float(cfg.get("min_inner_radial_positive_support", 0.65))
+            or float(radial_metrics.get("inner_radial_mean_difference", 0.0))
+            < float(cfg.get("min_inner_radial_mean_difference", 0.02))
+        ):
+            metrics["inner_radial_safety_rejected"] = 1.0
+            return image, None, metrics
         radial_x, radial_y, radial_radius = radial_circle
         metrics.update(
             {

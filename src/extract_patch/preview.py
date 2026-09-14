@@ -138,22 +138,37 @@ def _center_preview_slide(
 
 def _run_preview_workers(
     worker,
-    specs: list[SlideSpec],
+    specs: Iterable[SlideSpec],
     config: AppConfig,
     output_root: Path,
     logger: RunLogger,
     process_name: str,
 ) -> tuple[list[SlideResult], dict]:
+    resolved = 0
+
+    def iter_logged_specs():
+        nonlocal resolved
+        for spec in specs:
+            resolved += 1
+            if resolved == 1 or resolved % 100 == 0:
+                logger.logger.info(
+                    "input_progress resolved=%d latest_slide=%s",
+                    resolved,
+                    spec.slide_id,
+                )
+            yield spec
+
     try:
         results = process_map(
             worker,
-            specs,
+            iter_logged_specs(),
             config,
             output_root,
             max_workers=config.parallel.slide_workers,
             process_name=process_name,
             on_result=logger.record_slide,
         )
+        logger.logger.info("Input stream complete: resolved=%d", resolved)
         return results, logger.finalize(results)
     except BaseException:
         logger.abort("System-level preview failure; all WSI workers were stopped")
@@ -166,11 +181,10 @@ def preview(
     *,
     run_id: str | None = None,
 ) -> RunResult:
-    specs = list(specs)
     run_id = run_id or make_run_id("preview")
     output_root = Path(config.preview.root) / run_id
     logger = RunLogger(Path(config.logging.root), run_id, config)
-    logger.logger.info("Starting preview for %d slides", len(specs))
+    logger.logger.info("Starting preview; inputs will be resolved incrementally")
     results, summary = _run_preview_workers(
         _preview_slide, specs, config, output_root, logger, "preview-wsi"
     )
@@ -189,14 +203,62 @@ def center_preview(
     *,
     run_id: str | None = None,
 ) -> RunResult:
-    specs = list(specs)
     run_id = run_id or make_run_id("center_preview")
     output_root = Path(config.output.root).parent / "preview"
     logger = RunLogger(Path(config.logging.root), run_id, config)
-    logger.logger.info("Starting center preview for %d slides", len(specs))
-    results, summary = _run_preview_workers(
-        _center_preview_slide, specs, config, output_root, logger, "center-preview-wsi"
+    logger.logger.info(
+        "Starting center preview; inputs will be resolved incrementally "
+        "and completed previews will be skipped"
     )
+    resolved = 0
+    ordered_ids: list[str] = []
+    results_by_id: dict[str, SlideResult] = {}
+
+    def preview_is_complete(slide_id: str) -> bool:
+        destinations = (
+            output_root / "thumbnail" / f"{slide_id}.jpeg",
+            output_root / "mask" / f"{slide_id}.jpg",
+        )
+        return all(path.is_file() and path.stat().st_size > 0 for path in destinations)
+
+    def iter_pending_specs():
+        nonlocal resolved
+        for spec in specs:
+            resolved += 1
+            ordered_ids.append(spec.slide_id)
+            if resolved == 1 or resolved % 100 == 0:
+                logger.logger.info(
+                    "input_progress resolved=%d latest_slide=%s",
+                    resolved,
+                    spec.slide_id,
+                )
+            if not config.output.overwrite and preview_is_complete(spec.slide_id):
+                result = SlideResult(spec.slide_id, "skipped")
+                results_by_id[spec.slide_id] = result
+                logger.record_slide(result)
+                continue
+            yield spec
+
+    def record_result(result: SlideResult) -> None:
+        results_by_id[result.slide_id] = result
+        logger.record_slide(result)
+
+    try:
+        process_map(
+            _center_preview_slide,
+            iter_pending_specs(),
+            config,
+            output_root,
+            max_workers=config.parallel.slide_workers,
+            process_name="center-preview-wsi",
+            on_result=record_result,
+        )
+        logger.logger.info("Input stream complete: resolved=%d", resolved)
+        results = [results_by_id[slide_id] for slide_id in ordered_ids]
+        summary = logger.finalize(results)
+    except BaseException:
+        logger.abort("System-level center preview failure; all WSI workers were stopped")
+        raise
     return RunResult(
         run_id=run_id,
         status="success" if summary["status"] == "success" else "partial",

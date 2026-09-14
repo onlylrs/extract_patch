@@ -41,6 +41,15 @@ def _shape_metrics(contour: np.ndarray, shape: tuple[int, int]) -> dict[str, flo
     (x, y), radius = cv2.minEnclosingCircle(contour)
     bx, by, bw, bh = cv2.boundingRect(contour)
     hull = cv2.convexHull(contour)
+    border_margin = max(1.0, min(height, width) * 0.01)
+    border_touch_count = sum(
+        (
+            bx <= border_margin,
+            by <= border_margin,
+            bx + bw >= width - border_margin,
+            by + bh >= height - border_margin,
+        )
+    )
     return {
         "x": float(x),
         "y": float(y),
@@ -53,6 +62,9 @@ def _shape_metrics(contour: np.ndarray, shape: tuple[int, int]) -> dict[str, flo
         "center_distance": float(np.hypot(x - width / 2, y - height / 2) / min(height, width)),
         "bbox_x": float(bx),
         "bbox_y": float(by),
+        "bbox_width": float(bw),
+        "bbox_height": float(bh),
+        "border_touch_count": float(border_touch_count),
     }
 
 
@@ -236,7 +248,7 @@ class SmearHeuristic(Heuristic):
         if not contours:
             return image, None, {}
         metrics = _shape_metrics(contours[0], image.shape[:2])
-        valid = (
+        standard = (
             float(cfg.get("min_area_fraction", 0.10))
             <= metrics["area_fraction"]
             <= float(cfg.get("max_area_fraction", 0.90))
@@ -244,7 +256,20 @@ class SmearHeuristic(Heuristic):
             and metrics["solidity"] >= float(cfg.get("min_solidity", 0.80))
             and metrics["circularity"] >= float(cfg.get("min_circularity", 0.35))
         )
-        return image, (contours[0] if valid else None), metrics
+        full_field = (
+            bool(cfg.get("allow_full_field", True))
+            and float(cfg.get("min_full_field_area_fraction", 0.90))
+            < metrics["area_fraction"]
+            <= float(cfg.get("max_full_field_area_fraction", 1.0))
+            and metrics["aspect"] >= float(cfg.get("min_aspect", 1.45))
+            and metrics["solidity"] >= float(cfg.get("min_full_field_solidity", 0.95))
+            and metrics["border_touch_count"]
+            >= float(cfg.get("min_full_field_border_touches", 3))
+        )
+        metrics["mode"] = (
+            "full_field" if full_field else "standard" if standard else "none"
+        )
+        return image, (contours[0] if standard or full_field else None), metrics
 
     def is_applicable(self, thumbnail, config: Config | None = None):
         try:
@@ -266,13 +291,30 @@ class SmearHeuristic(Heuristic):
             return decision(self.name, "rejected", "Smear candidate failed safety gates", metrics=metrics)
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
         cv2.drawContours(mask, [contour], -1, 1, thickness=cv2.FILLED)
-        expansion = float((config or {}).get("expansion_ratio", 0.015))
+        cfg = config or {}
+        expansion = float(
+            cfg.get(
+                "full_field_expansion_ratio"
+                if metrics.get("mode") == "full_field"
+                else "expansion_ratio",
+                0.0 if metrics.get("mode") == "full_field" else 0.015,
+            )
+        )
         if expansion > 0:
             size = odd_size(min(image.shape[:2]) * expansion)
             mask = cv2.dilate(
                 mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
             )
-        confidence = min(0.97, 0.45 + 0.18 * min(metrics["aspect"], 2.5) + 0.1 * metrics["solidity"])
+        confidence = (
+            float(cfg.get("full_field_confidence", 0.92))
+            if metrics.get("mode") == "full_field"
+            else min(
+                0.97,
+                0.45
+                + 0.18 * min(metrics["aspect"], 2.5)
+                + 0.1 * metrics["solidity"],
+            )
+        )
         return decision(
             self.name,
             "accepted",

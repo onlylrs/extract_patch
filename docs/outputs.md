@@ -16,6 +16,9 @@
 `thumbnail/<WSI>.jpeg` 和 `mask/<WSI>.jpg`。后者是带分割轮廓与 patch 网格的
 thumbnail 可视化，与 preview 模式的 `contour.jpg` 相同。
 
+`--center-preview` 可直接断点续跑：同一 WSI 的非空 thumbnail 和 mask 均存在时
+跳过；任一文件缺失或为空时重新生成这一对文件。`output.overwrite: true` 会强制重做。
+
 恢复不依赖 `run_id`。已有有效 `index.json`、preview 和 sample 的 WSI 会整张跳过；
 未完成的 JPEG/PNG 目录会复用已有图片，未完成的 TAR 目录会扫描已有 shard 成员并
 只补齐缺少的 patch。完成后重新生成 canonical `index.json` 和完整 sample。

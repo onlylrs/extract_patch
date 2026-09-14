@@ -79,6 +79,8 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
     heuristic_pipe: list[str] = field(default_factory=lambda: ["density"])
+    heuristic_strategy: str = "first"
+    heuristic_arbitration: dict[str, Any] = field(default_factory=dict)
     heuristics: dict[str, dict[str, Any]] = field(default_factory=dict)
     post_filter_pipe: list[str] = field(default_factory=list)
     post_filters: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -107,6 +109,8 @@ def _coerce(raw: dict[str, Any]) -> AppConfig:
         logging=LoggingConfig(**raw.get("logging", {})),
         preview=PreviewConfig(**raw.get("preview", {})),
         heuristic_pipe=list(raw.get("heuristic_pipe", ["density"])),
+        heuristic_strategy=str(raw.get("heuristic_strategy", "first")),
+        heuristic_arbitration=dict(raw.get("heuristic_arbitration", {})),
         heuristics=dict(raw.get("heuristics", {})),
         post_filter_pipe=list(raw.get("post_filter_pipe", [])),
         post_filters=dict(raw.get("post_filters", {})),
@@ -116,6 +120,8 @@ def _coerce(raw: dict[str, Any]) -> AppConfig:
 def validate_config(config: AppConfig) -> None:
     if not config.heuristic_pipe:
         raise ValueError("heuristic_pipe cannot be empty")
+    if config.heuristic_strategy not in {"first", "arbitrate"}:
+        raise ValueError("heuristic_strategy must be first or arbitrate")
     if any(not isinstance(name, str) or not name for name in config.post_filter_pipe):
         raise ValueError("post_filter_pipe entries must be non-empty names")
     if config.patching.patch_size <= 0 or config.patching.output_size <= 0:

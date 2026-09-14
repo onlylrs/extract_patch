@@ -463,16 +463,28 @@ def extract(
     *,
     run_id: str | None = None,
 ) -> RunResult:
-    specs = list(specs)
     run_id = run_id or make_run_id("extract")
     output_root = Path(config.output.root)
     output_root.mkdir(parents=True, exist_ok=True)
     logger = RunLogger(Path(config.logging.root), run_id, config)
-    logger.logger.info("Starting extraction for %d slides", len(specs))
+    logger.logger.info(
+        "Starting extraction; inputs will be resolved and inspected incrementally"
+    )
     results_by_id: dict[str, SlideResult] = {}
-    work_items: list[tuple[SlideSpec, dict[str, str]]] = []
-    try:
+    ordered_ids: list[str] = []
+    resolved = 0
+
+    def iter_work_items():
+        nonlocal resolved
         for spec in specs:
+            resolved += 1
+            ordered_ids.append(spec.slide_id)
+            if resolved == 1 or resolved % 100 == 0:
+                logger.logger.info(
+                    "input_progress resolved=%d latest_slide=%s",
+                    resolved,
+                    spec.slide_id,
+                )
             slide_output = output_root / spec.slide_id
             patch_count = (
                 None
@@ -498,10 +510,7 @@ def extract(
                     len(completed),
                     config.output.mode,
                 )
-            work_items.append((spec, completed))
-    except BaseException:
-        logger.abort("Failed while inspecting existing extraction outputs")
-        raise
+            yield spec, completed
 
     def record_work_result(work_result: SlideWorkResult) -> None:
         for record in work_result.patches:
@@ -512,13 +521,14 @@ def extract(
     try:
         process_map(
             _extract_slide,
-            work_items,
+            iter_work_items(),
             config,
             max_workers=config.parallel.slide_workers,
             process_name="extract-wsi",
             on_result=record_work_result,
         )
-        results = [results_by_id[spec.slide_id] for spec in specs]
+        logger.logger.info("Input stream complete: resolved=%d", resolved)
+        results = [results_by_id[slide_id] for slide_id in ordered_ids]
         summary = logger.finalize(results)
     except BaseException:
         logger.abort("System-level extraction failure; all WSI workers were stopped")

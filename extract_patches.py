@@ -55,7 +55,7 @@ def _input_value(args: argparse.Namespace) -> str | Path | Sequence[str | Path]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from extract_patch.config import dump_config, load_config
-    from extract_patch.inputs import parse_inputs
+    from extract_patch.inputs import iter_inputs
 
     args = build_parser().parse_args(argv)
     config_path = args.config
@@ -67,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        specs = parse_inputs(_input_value(args), root=args.input_root)
+        specs = iter_inputs(_input_value(args), root=args.input_root)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Input error: {exc}") from exc
 

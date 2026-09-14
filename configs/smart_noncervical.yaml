@@ -1,0 +1,55 @@
+reader:
+  backend: auto
+  fallback: openslide
+  thumbnail_width: 2048
+
+heuristic_pipe:
+  - serrated_outer_circle
+  - double_circle
+  - smear
+  - single_circle
+  - smartcyto_circle
+  - density
+
+heuristic_strategy: arbitrate
+heuristic_arbitration:
+  min_specialized_confidence: 0.70
+  min_density_recall: 0.90
+  max_density_area_ratio: 3.50
+
+heuristics:
+  serrated_outer_circle:
+    min_confidence: 0.60
+    arbitration_min_confidence: 0.60
+    density_guard: false
+    min_outer_artifact_fraction: 0.05
+    max_outer_artifact_fraction: 0.45
+    min_inner_radial_score: 0.10
+    min_inner_radial_positive_support: 0.85
+    min_inner_radial_mean_difference: 0.05
+  smartcyto_circle:
+    min_confidence: 0.70
+
+patching:
+  level: 0
+  mpp: 0.5
+  patch_size: 600
+  output_size: 600
+  stride: 600
+  min_region_fraction: 0.10
+  inclusion: fraction
+
+output:
+  root: outputs/patches
+  mode: tar
+  jpeg_quality: 95
+  tar_preview: true
+  tar_preview_n: 20
+
+parallel:
+  slide_workers: 4
+  read_workers_per_slide: 4
+  encode_workers: 2
+  writer_workers: 2
+  max_inflight_patches: 32
+  max_inflight_bytes: 536870912

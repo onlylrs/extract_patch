@@ -11,6 +11,11 @@
 `max_inflight_patches` 和 `max_inflight_bytes` 是每个 WSI 进程的 backpressure 上限。
 读取速度高于编码或 NAS 写入速度时，生产者会等待，而不是继续堆积内存。
 
+TXT 输入按行解析，WSI 任务通过大小受限的进程队列边解析边提交。启动日志会在
+访问第一张 WSI 前写入，`input_progress` 每解析 100 张记录一次进度，因此 NAS 上的
+大型 center 不需要先完成全量路径检查。正式 extraction 和 center preview 都会在
+流式提交过程中检查已有输出并跳过已完成 WSI。
+
 父进程集中记录日志和 manifest。单张 WSI 的打开、读取或分割错误会记为 failed 并
 继续下一张；worker 崩溃、内存不足、文件描述符耗尽或磁盘满会终止整次运行并回收
 全部子进程。通过 `run_extract.sh` 启动后，只需终止脚本打印的父进程 PID。

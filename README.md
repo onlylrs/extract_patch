@@ -51,7 +51,8 @@ Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.
 
 这里的 `--output` 仍表示 patch 根目录；检查结果会写到同级的
 `preview/thumbnail/` 和 `preview/mask/`。其中 mask 图片是与 preview 模式
-`contour.jpg` 相同的分割轮廓和 patch 网格可视化，不是黑白二值 mask。
+`contour.jpg` 相同的分割轮廓和 patch 网格可视化，不是黑白二值 mask。再次运行时，
+已同时生成 thumbnail 和 mask 的 WSI 会跳过；只生成其中一个的 WSI 会重新处理。
 
 ### level, mpp, size
 
@@ -74,6 +75,8 @@ sRGB；没有 ICC profile 时保持原始颜色。每张 WSI 的日志会明确�
 `logs/<run_id>.log` 路径；`--output` 不存在时会自动递归创建。终止任务时只需
 `kill <PID>`，父进程会停止并回收全部 WSI worker。Linux parent-death signal 也会在
 父进程被 `kill -9` 时终止 WSI worker，但普通 `kill` 可以完整刷新日志与恢复状态。
+输入清单逐行解析并通过有界队列提交，首条启动日志在扫描 WSI 前写入；大清单不会
+等待全部路径解析完才开始处理。日志中的 `input_progress` 会持续显示解析进度。
 
 查看完整配置（内容写入启动时打印的日志文件）：
 
