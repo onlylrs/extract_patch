@@ -14,6 +14,13 @@ pip install pillow pyyaml tqdm openslide-python
 pip install "opencv-python-headless>=4.10,<4.12"
 ```
 
+启用 `qc` 后筛时再安装 PyTorch（未写入 `post_filter_pipe` 时不会加载）：
+
+```bash
+pip install torch torchvision
+```
+
+
 ## Preview
 
 单张 WSI：
@@ -83,6 +90,21 @@ sRGB；没有 ICC profile 时保持原始颜色。每张 WSI 的日志会明确�
 ```bash
 ./run_extract.sh --show-config --config configs/default.yaml
 ```
+
+后筛默认关闭。需要丢掉空白 patch 或运行 QC 分类器时，在配置里打开 `post_filter_pipe`：
+
+```yaml
+post_filter_pipe:
+  - nonempty
+  - qc
+
+post_filters:
+  qc:
+    device: auto
+    batch_size: 128
+```
+
+`qc` 使用仓库内置的 MobileNetV3-Large 权重（keep/reject）。父进程只启动一个 QC 服务、只加载一份模型；各 WSI worker 把 patch 送进去合批推理，再按各自 `index.json` 的 plan 顺序写回。`device: auto` 会选一张空闲显存足够的 GPU，没有则 warning 并用 CPU。未写入 pipe 时不加载 PyTorch、不占 GPU。`nonempty` 与 `qc` 相互独立，可单独或串联使用。
 
 ## 输出
 

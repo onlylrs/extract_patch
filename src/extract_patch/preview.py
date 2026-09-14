@@ -11,6 +11,8 @@ from PIL import Image
 from .config import AppConfig
 from .concurrency import process_map, raise_if_system_error
 from .filters import PatchFilterPipeline
+from .filters.qc.runtime import bind_qc_client
+from .filters.qc.service import running_qc_service
 from .heuristics import HeuristicPipeline
 from .models import RunResult, SlideResult, SlideSpec
 from .planner import effective_patching, plan_patches
@@ -23,7 +25,9 @@ def _preview_slide(
     spec: SlideSpec,
     config: AppConfig,
     output_root: Path,
+    qc_client=None,
 ) -> SlideResult:
+    bind_qc_client(qc_client)
     started = time.perf_counter()
     cv2.setNumThreads(config.parallel.opencv_threads)
     destination = output_root / spec.slide_id
@@ -143,6 +147,7 @@ def _run_preview_workers(
     output_root: Path,
     logger: RunLogger,
     process_name: str,
+    qc_client=None,
 ) -> tuple[list[SlideResult], dict]:
     resolved = 0
 
@@ -164,6 +169,7 @@ def _run_preview_workers(
             iter_logged_specs(),
             config,
             output_root,
+            qc_client,
             max_workers=config.parallel.slide_workers,
             process_name=process_name,
             on_result=logger.record_slide,
@@ -185,9 +191,10 @@ def preview(
     output_root = Path(config.preview.root) / run_id
     logger = RunLogger(Path(config.logging.root), run_id, config)
     logger.logger.info("Starting preview; inputs will be resolved incrementally")
-    results, summary = _run_preview_workers(
-        _preview_slide, specs, config, output_root, logger, "preview-wsi"
-    )
+    with running_qc_service(config, logger.logger) as qc_client:
+        results, summary = _run_preview_workers(
+            _preview_slide, specs, config, output_root, logger, "preview-wsi", qc_client
+        )
     return RunResult(
         run_id=run_id,
         status="success" if summary["status"] == "success" else "partial",

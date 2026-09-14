@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -34,6 +34,14 @@ class PatchFilter(ABC):
         config: Config | None = None,
     ) -> FilterDecision:
         """Return whether one decoded patch should be kept."""
+
+    def evaluate_many(
+        self,
+        items: Sequence[tuple[Image.Image, PatchPlan]],
+        config: Config | None = None,
+    ) -> list[FilterDecision]:
+        """Return keep/drop decisions for a batch of decoded patches."""
+        return [self(image, plan, config) for image, plan in items]
 
     def __call__(
         self,

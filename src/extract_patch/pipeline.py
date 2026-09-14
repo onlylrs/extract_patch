@@ -18,14 +18,16 @@ from PIL import Image
 
 from .config import AppConfig
 from .concurrency import process_map, raise_if_system_error
-from .filters import FilterDecision, PatchFilterPipeline
+from .filters import PatchFilterPipeline
+from .filters.qc.runtime import bind_qc_client
+from .filters.qc.service import running_qc_service
 from .heuristics import HeuristicPipeline
 from .models import PatchPlan, PatchRecord, RunResult, SlideResult, SlideSpec, SlideWorkResult
 from .planner import effective_patching, plan_patches
 from .readers import open_reader, stage_slide
 from .reporting import RunLogger, make_run_id, save_center_previews
 from .sinks import PatchSink, create_sink, generate_tar_preview, patch_stem
-from .sinks.base import EncodedPatch, prepare_image
+from .sinks.base import prepare_image
 
 
 class _PatchCollector:
@@ -159,7 +161,7 @@ def _extract_batches(
     success = 0
     filtered = 0
     outputs_by_plan_index: dict[int, str] = {}
-    timings = {"read": 0.0, "encode": 0.0, "write": 0.0}
+    timings = {"read": 0.0, "filter": 0.0, "encode": 0.0, "write": 0.0}
     timings["max_inflight_patches"] = float(batch_size)
     completed = logger.completed_outputs(spec.slide_id)
     filter_pipeline = PatchFilterPipeline.from_config(config)
@@ -178,16 +180,6 @@ def _extract_batches(
                 return _read_patch(reader, plan)
             finally:
                 pool.put(reader)
-
-        def filter_and_encode(
-            image: Image.Image,
-            plan: PatchPlan,
-        ) -> tuple[FilterDecision, EncodedPatch | None]:
-            prepared = prepare_image(image, plan)
-            filter_result = filter_pipeline.run(prepared, plan)
-            if not filter_result.keep:
-                return filter_result, None
-            return filter_result, sink.encode(prepared, plan)
 
         with (
             ThreadPoolExecutor(max_workers=worker_count) as read_executor,
@@ -220,14 +212,11 @@ def _extract_batches(
                     pending_reads[read_executor.submit(read_with_pool, plan)] = plan
 
                 read_started = time.perf_counter()
-                pending_encodes: dict[Future, PatchPlan] = {}
+                prepared_items: list[tuple[Image.Image, PatchPlan]] = []
                 for future in as_completed(pending_reads):
                     plan = pending_reads[future]
                     try:
-                        image = future.result()
-                        pending_encodes[
-                            encode_executor.submit(filter_and_encode, image, plan)
-                        ] = plan
+                        prepared_items.append((prepare_image(future.result(), plan), plan))
                     except Exception as exc:
                         raise_if_system_error(exc)
                         message = f"read {plan.x},{plan.y}: {type(exc).__name__}: {exc}"
@@ -247,30 +236,36 @@ def _extract_batches(
                         )
                 timings["read"] += time.perf_counter() - read_started
 
+                filter_started = time.perf_counter()
+                decisions = filter_pipeline.run_many(prepared_items)
+                timings["filter"] += time.perf_counter() - filter_started
+
                 encode_started = time.perf_counter()
+                pending_encodes: dict[Future, PatchPlan] = {}
+                for (image, plan), filter_result in zip(prepared_items, decisions):
+                    if not filter_result.keep:
+                        logger.record_patch(
+                            spec.slide_id,
+                            PatchRecord(
+                                plan.index,
+                                plan.x,
+                                plan.y,
+                                plan.level,
+                                plan.output_size,
+                                "",
+                                "filtered",
+                                filter_result.reason,
+                            ),
+                        )
+                        filtered += 1
+                        continue
+                    pending_encodes[encode_executor.submit(sink.encode, image, plan)] = plan
+
                 pending_writes: dict[Future, tuple[PatchPlan, str]] = {}
                 for future in as_completed(pending_encodes):
                     plan = pending_encodes[future]
                     try:
-                        filter_result, encoded = future.result()
-                        if not filter_result.keep:
-                            logger.record_patch(
-                                spec.slide_id,
-                                PatchRecord(
-                                    plan.index,
-                                    plan.x,
-                                    plan.y,
-                                    plan.level,
-                                    plan.output_size,
-                                    "",
-                                    "filtered",
-                                    filter_result.reason,
-                                ),
-                            )
-                            filtered += 1
-                            continue
-                        if encoded is None:
-                            raise RuntimeError("Accepted patch filter returned no encoded patch")
+                        encoded = future.result()
                         pending_writes[write_executor.submit(sink.publish, encoded)] = (
                             plan,
                             encoded.name,
@@ -360,7 +355,9 @@ def _extract_batches(
 def _extract_slide(
     item: tuple[SlideSpec, dict[str, str]],
     config: AppConfig,
+    qc_client=None,
 ) -> SlideWorkResult:
+    bind_qc_client(qc_client)
     spec, completed = item
     collector = _PatchCollector(completed)
     started = time.perf_counter()
@@ -519,17 +516,19 @@ def extract(
         results_by_id[work_result.result.slide_id] = work_result.result
 
     try:
-        process_map(
-            _extract_slide,
-            iter_work_items(),
-            config,
-            max_workers=config.parallel.slide_workers,
-            process_name="extract-wsi",
-            on_result=record_work_result,
-        )
-        logger.logger.info("Input stream complete: resolved=%d", resolved)
-        results = [results_by_id[slide_id] for slide_id in ordered_ids]
-        summary = logger.finalize(results)
+        with running_qc_service(config, logger.logger) as qc_client:
+            process_map(
+                _extract_slide,
+                iter_work_items(),
+                config,
+                qc_client,
+                max_workers=config.parallel.slide_workers,
+                process_name="extract-wsi",
+                on_result=record_work_result,
+            )
+            logger.logger.info("Input stream complete: resolved=%d", resolved)
+            results = [results_by_id[slide_id] for slide_id in ordered_ids]
+            summary = logger.finalize(results)
     except BaseException:
         logger.abort("System-level extraction failure; all WSI workers were stopped")
         raise

@@ -1,0 +1,12 @@
+{
+  "model_name": "mobilenet_v3_large",
+  "model_version": "20260912T072309Z",
+  "checkpoint": "qc_20260912T072309Z.pt",
+  "input_size": 256,
+  "threshold": 0.14677508175373077,
+  "sha256": "495035a56fe010a86221125bf26028407a1e3df2e8e7f8957eb8e4210dbfc12e",
+  "bytes": 16996691,
+  "decision_rule": "keep if p_keep >= threshold; reject otherwise",
+  "source_training_run": 5,
+  "labeled_count": 3611
+}
