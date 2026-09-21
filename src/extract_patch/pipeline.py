@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .config import AppConfig
+from .config import AppConfig, parse_permission_mode
 from .concurrency import process_map, raise_if_system_error
 from .filters import PatchFilterPipeline
 from .filters.qc.runtime import bind_qc_client
@@ -24,6 +24,7 @@ from .filters.qc.service import running_qc_service
 from .heuristics import HeuristicPipeline
 from .models import PatchPlan, PatchRecord, RunResult, SlideResult, SlideSpec, SlideWorkResult
 from .planner import effective_patching, plan_patches
+from .permissions import chmod_tree, chmod_trees
 from .readers import open_reader, stage_slide
 from .reporting import RunLogger, make_run_id, save_center_previews
 from .sinks import PatchSink, create_sink, generate_tar_preview, patch_stem
@@ -42,6 +43,17 @@ class _PatchCollector:
 
     def record_patch(self, _slide_id: str, record: PatchRecord) -> None:
         self.records.append(record)
+
+
+def _chmod_extract_outputs(config: AppConfig, output_root: Path) -> None:
+    mode = parse_permission_mode(config.output.permissions)
+    chmod_tree(output_root, mode)
+    if config.output.mode == "none":
+        return
+    preview_root = output_root.parent / "preview"
+    chmod_trees((preview_root / "thumbnail", preview_root / "mask"), mode)
+    if preview_root.exists():
+        preview_root.chmod(mode)
 
 
 def _expected_name(sink: PatchSink, plan: PatchPlan) -> str:
@@ -528,8 +540,13 @@ def extract(
             )
             logger.logger.info("Input stream complete: resolved=%d", resolved)
             results = [results_by_id[slide_id] for slide_id in ordered_ids]
+            _chmod_extract_outputs(config, output_root)
             summary = logger.finalize(results)
     except BaseException:
+        try:
+            _chmod_extract_outputs(config, output_root)
+        except OSError:
+            logger.logger.exception("Could not apply permissions to partial outputs")
         logger.abort("System-level extraction failure; all WSI workers were stopped")
         raise
     return RunResult(

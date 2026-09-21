@@ -118,6 +118,7 @@ class TarSink(PatchSink):
         preview_count: int = 20,
         preview_seed: int = 0,
         overwrite: bool = False,
+        permissions: int = 0o777,
     ):
         if shard_max_count <= 0:
             raise ValueError("shard_max_count must be positive")
@@ -130,6 +131,7 @@ class TarSink(PatchSink):
         self.preview_seed = preview_seed
         self._preview_heap = []
         self.overwrite = overwrite
+        self.permissions = permissions
         self._shard_prefix = self.output_dir.name
         existing = sorted(self.output_dir.glob(f"{self._shard_prefix}_*.tar"))
         self._shard_index = 1
@@ -207,7 +209,7 @@ class TarSink(PatchSink):
             info = tarfile.TarInfo(encoded.name)
             info.size = len(encoded.data)
             info.mtime = 0
-            info.mode = 0o644
+            info.mode = self.permissions
             assert self._archive is not None
             self._archive.addfile(info, BytesIO(encoded.data))
             if self.preview_enabled:

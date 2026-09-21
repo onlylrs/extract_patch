@@ -16,6 +16,10 @@
 `thumbnail/<WSI>.jpeg` 和 `mask/<WSI>.jpg`。后者是带分割轮廓与 patch 网格的
 thumbnail 可视化，与 preview 模式的 `contour.jpg` 相同。
 
+所有输出文件、目录和子目录在本次写入完成后都会递归应用
+`output.permissions`，默认是 `"777"`。TAR 内 JPEG 成员的 mode 也使用同一配置。
+例如可通过 `--set output.permissions=755` 改为 `755`。
+
 `--center-preview` 可直接断点续跑：同一 WSI 的非空 thumbnail 和 mask 均存在时
 跳过；任一文件缺失或为空时重新生成这一对文件。`output.overwrite: true` 会强制重做。
 

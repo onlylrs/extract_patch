@@ -18,6 +18,7 @@ patching:
 output:
   root: outputs/patches
   mode: tar
+  permissions: "777"
   jpeg_quality: 95
   tar_preview: true
   tar_preview_n: 20

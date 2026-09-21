@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import OutputConfig
+from ..config import OutputConfig, parse_permission_mode
 from .base import EncodedPatch, PatchSink, patch_stem, prepare_image
 from .files import FileSink, ImageFileSink, JpegSink, NoneSink, NullSink, PngSink
 from .tar import TarSink, generate_tar_preview
@@ -12,6 +12,7 @@ def create_sink(
     config: OutputConfig, output_dir: Path | str | None = None
 ) -> PatchSink:
     destination = Path(config.root) if output_dir is None else Path(output_dir)
+    permissions = parse_permission_mode(config.permissions)
     if config.mode == "jpeg":
         return JpegSink(
             destination,
@@ -29,6 +30,7 @@ def create_sink(
             preview_count=config.tar_preview_n,
             preview_seed=config.tar_preview_seed,
             overwrite=config.overwrite,
+            permissions=permissions,
         )
     if config.mode == "none":
         return NoneSink(destination)

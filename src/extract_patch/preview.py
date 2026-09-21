@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .config import AppConfig
+from .config import AppConfig, parse_permission_mode
 from .concurrency import process_map, raise_if_system_error
 from .filters import PatchFilterPipeline
 from .filters.qc.runtime import bind_qc_client
@@ -16,6 +16,7 @@ from .filters.qc.service import running_qc_service
 from .heuristics import HeuristicPipeline
 from .models import RunResult, SlideResult, SlideSpec
 from .planner import effective_patching, plan_patches
+from .permissions import chmod_tree
 from .readers import open_reader
 from .reporting import RunLogger, make_run_id, save_center_previews, save_overlay
 from .sinks.base import prepare_image
@@ -175,8 +176,13 @@ def _run_preview_workers(
             on_result=logger.record_slide,
         )
         logger.logger.info("Input stream complete: resolved=%d", resolved)
+        chmod_tree(output_root, parse_permission_mode(config.output.permissions))
         return results, logger.finalize(results)
     except BaseException:
+        try:
+            chmod_tree(output_root, parse_permission_mode(config.output.permissions))
+        except OSError:
+            logger.logger.exception("Could not apply permissions to partial preview outputs")
         logger.abort("System-level preview failure; all WSI workers were stopped")
         raise
 
@@ -262,8 +268,13 @@ def center_preview(
         )
         logger.logger.info("Input stream complete: resolved=%d", resolved)
         results = [results_by_id[slide_id] for slide_id in ordered_ids]
+        chmod_tree(output_root, parse_permission_mode(config.output.permissions))
         summary = logger.finalize(results)
     except BaseException:
+        try:
+            chmod_tree(output_root, parse_permission_mode(config.output.permissions))
+        except OSError:
+            logger.logger.exception("Could not apply permissions to partial center previews")
         logger.abort("System-level center preview failure; all WSI workers were stopped")
         raise
     return RunResult(

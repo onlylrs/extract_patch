@@ -130,6 +130,8 @@ TAR 模式可通过 `output.tar_preview: true` 在每个 `slide_id/sample/` 中�
 
 正式提取成功后，还会在 patch 根目录旁写入
 `preview/thumbnail/<WSI>.jpeg` 和 `preview/mask/<WSI>.jpg`。
+生成的输出文件、目录及子目录默认统一设置为 `777`；可在配置中使用
+`output.permissions: "755"` 或命令行 `--set output.permissions=755` 调整。
 
 每次运行只保留一个 `logs/<run_id>.log`。恢复以 patch 输出目录为准，因此更换
 `run_id` 后仍会跳过带完整 `index.json` 的 WSI；未完成的文件或 TAR shard 会按已有

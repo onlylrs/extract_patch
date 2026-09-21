@@ -44,6 +44,7 @@ class OutputConfig:
     tar_preview_n: int = 20
     tar_preview_seed: int = 0
     overwrite: bool = False
+    permissions: str | int = "777"
 
 
 @dataclass
@@ -134,6 +135,7 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("min_region_fraction must be in [0, 1]")
     if config.output.mode not in {"jpeg", "png", "tar", "none"}:
         raise ValueError("output.mode must be jpeg, png, tar, or none")
+    parse_permission_mode(config.output.permissions)
     if config.output.tar_preview_n < 0:
         raise ValueError("output.tar_preview_n cannot be negative")
     for name in (
@@ -145,6 +147,18 @@ def validate_config(config: AppConfig) -> None:
     ):
         if getattr(config.parallel, name) <= 0:
             raise ValueError(f"parallel.{name} must be positive")
+
+
+def parse_permission_mode(value: str | int) -> int:
+    """Parse a user-facing chmod value such as ``777`` or ``0o755``."""
+    if isinstance(value, bool):
+        raise ValueError("output.permissions must be an octal mode from 000 to 777")
+    text = str(value).strip().lower()
+    if text.startswith("0o"):
+        text = text[2:]
+    if not text or len(text) > 3 or any(character not in "01234567" for character in text):
+        raise ValueError("output.permissions must be an octal mode from 000 to 777")
+    return int(text, 8)
 
 
 def parse_override(value: str) -> tuple[list[str], Any]:

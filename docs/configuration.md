@@ -35,7 +35,11 @@ post_filters:
 - `patching`：level、输出 `mpp`、patch/output size、stride、mask 覆盖率、采样上限。
   `mpp: null` 时保留指定 level 的原生 MPP；设置数值时按该 level 读取后使用 LANCZOS
   缩放到目标 MPP。
-- `output`：`jpeg|png|tar|none`、质量和 shard 大小。
+- `output`：`jpeg|png|tar|none`、质量、shard 大小，以及最终输出权限。
+  `permissions` 默认为 `"777"`；也可设为 `"755"`、`"664"` 等合法八进制模式。
+  正式提取、preview 和 center-preview 完成写入后，会把各自输出目录内的所有文件、
+  目录和子目录统一设为该权限。建议在 YAML 中加引号，CLI 可用
+  `--set output.permissions=755` 临时覆盖。
 - `parallel`：slide/read/encode/write workers 以及 inflight 上限。
 - `logging`、`preview`：默认输出位置。
 
