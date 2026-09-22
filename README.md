@@ -79,7 +79,9 @@ sRGB；没有 ICC profile 时保持原始颜色。每张 WSI 的日志会明确�
 ```
 
 `run_extract.sh` 的所有模式都会使用 `nohup` 转入后台，并打印唯一父进程 PID 和
-`logs/<run_id>.log` 路径；`--output` 不存在时会自动递归创建。终止任务时只需
+`logs/<center>_<mode>_<YYYYMMDD>_<PID>.log` 路径；例如
+`logs/91360_center-preview_20260922_12345.log`。`--output` 不存在时会自动递归
+创建。终止任务时只需
 `kill <PID>`，父进程会停止并回收全部 WSI worker。Linux parent-death signal 也会在
 父进程被 `kill -9` 时终止 WSI worker，但普通 `kill` 可以完整刷新日志与恢复状态。
 输入清单逐行解析并通过有界队列提交，首条启动日志在扫描 WSI 前写入；大清单不会

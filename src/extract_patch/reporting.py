@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .config import AppConfig, config_dict
+from .config import AppConfig, config_dict, dump_config
 from .models import HeuristicDecision, PatchPlan, PatchRecord, SlideResult
 
 
@@ -70,7 +70,20 @@ class RunLogger:
             self._manifest_writer.writeheader()
         self._signature.write_text(self.config_signature + "\n", encoding="utf-8")
         self._configure_logging(config.logging.level)
-        self.logger.info("run=%s config_signature=%s", run_id, self.config_signature[:12])
+        self.logger.info(
+            "Run details:\n"
+            "  run_id: %s\n"
+            "  pid: %d\n"
+            "  log_file: %s\n"
+            "  config_signature: %s\n"
+            "  config_signature_meaning: SHA-256 of the resolved config; used to "
+            "detect config changes when resuming the same run_id",
+            run_id,
+            os.getpid(),
+            self.path,
+            self.config_signature,
+        )
+        self.logger.info("Resolved config:\n%s", dump_config(config).rstrip())
 
     def _configure_logging(self, level: str) -> None:
         self.logger = logging.getLogger(f"extract_patch.{self.run_id}")
@@ -78,8 +91,10 @@ class RunLogger:
         self.logger.propagate = False
         if self.logger.handlers:
             return
+        # Keep the compact, source-oriented style used by GPFM/DINOv2 logs.
         formatter = logging.Formatter(
-            "%(asctime)s %(levelname)s %(processName)s %(threadName)s %(message)s"
+            fmt="%(levelname).1s%(asctime)s %(process)d %(filename)s:%(lineno)d] %(message)s",
+            datefmt="%Y%m%d %H:%M:%S",
         )
         if os.environ.get("EXTRACT_PATCH_STDOUT_LOGGED") != "1":
             file_handler = logging.FileHandler(self.path, encoding="utf-8")

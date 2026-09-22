@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 output_root=""
 run_id=""
 input_list=""
+first_input=""
+mode="extract"
 args=()
 
 while (($#)); do
@@ -16,7 +18,23 @@ while (($#)); do
         --background)
             shift
             ;;
-        --preview|--center-preview|--inspect|--show-config)
+        --preview)
+            mode="preview"
+            args+=("$1")
+            shift
+            ;;
+        --center-preview)
+            mode="center-preview"
+            args+=("$1")
+            shift
+            ;;
+        --inspect)
+            mode="inspect"
+            args+=("$1")
+            shift
+            ;;
+        --show-config)
+            mode="show-config"
             args+=("$1")
             shift
             ;;
@@ -62,7 +80,22 @@ while (($#)); do
             args+=("$1")
             shift
             ;;
+        --config|--input-root|--n-patches|--set)
+            if (($# < 2)); then
+                echo "$1 requires a value" >&2
+                exit 2
+            fi
+            args+=("$1" "$2")
+            shift 2
+            ;;
+        --config=*|--input-root=*|--n-patches=*|--set=*|-*)
+            args+=("$1")
+            shift
+            ;;
         *)
+            if [[ -z "$first_input" ]]; then
+                first_input="$1"
+            fi
             args+=("$1")
             shift
             ;;
@@ -74,27 +107,42 @@ if [[ -n "$output_root" ]]; then
 fi
 
 mkdir -p "${ROOT}/logs"
-if [[ -z "$run_id" ]]; then
+if [[ -n "$input_list" ]]; then
     input_name="${input_list##*/}"
     input_name="${input_name%.*}"
-    input_name="${input_name:-extract}"
-    input_name="${input_name// /_}"
-    timestamp="$(date '+%Y%m%d_%H%M%S')"
-    run_id="${input_name}_$$_${timestamp}"
-    args+=(--run-id "$run_id")
+elif [[ -n "$first_input" ]]; then
+    input_name="${first_input##*/}"
+    input_name="${input_name%.*}"
+else
+    input_name="extract"
 fi
-safe_run_id="${run_id//\//_}"
-log_path="${ROOT}/logs/${safe_run_id}.log"
-nohup env \
-    EXTRACT_PATCH_STDOUT_LOGGED=1 \
-    EXTRACT_PATCH_LOG_PATH="$log_path" \
-    OMP_NUM_THREADS=1 \
-    OPENBLAS_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1 \
-    python3 "${ROOT}/extract_patches.py" "${args[@]}" \
-    > "$log_path" 2>&1 < /dev/null &
+input_name="${input_name:-extract}"
+input_name="${input_name// /_}"
+input_name="${input_name//\//_}"
+date_stamp="$(date '+%Y%m%d')"
+timestamp="$(date '+%Y%m%d_%H%M%S')"
+log_prefix="${ROOT}/logs/${input_name}_${mode}_${date_stamp}"
+
+# exec keeps the background subshell PID as the Python process PID, so the
+# printed PID, log filename, and PID recorded inside the log all agree.
+(
+    task_pid="$BASHPID"
+    task_log_path="${log_prefix}_${task_pid}.log"
+    if [[ -z "$run_id" ]]; then
+        args+=(--run-id "${input_name}_${task_pid}_${timestamp}")
+    fi
+    exec nohup env \
+        EXTRACT_PATCH_STDOUT_LOGGED=1 \
+        EXTRACT_PATCH_LOG_PATH="$task_log_path" \
+        OMP_NUM_THREADS=1 \
+        OPENBLAS_NUM_THREADS=1 \
+        MKL_NUM_THREADS=1 \
+        python3 "${ROOT}/extract_patches.py" "${args[@]}" \
+        > "$task_log_path" 2>&1 < /dev/null
+) &
 pid=$!
 disown "$pid" 2>/dev/null || true
+log_path="${log_prefix}_${pid}.log"
 
 echo "Started background extraction"
 echo "PID: $pid"
