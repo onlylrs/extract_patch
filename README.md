@@ -83,7 +83,7 @@ sRGB；没有 ICC profile 时保持原始颜色。每张 WSI 的日志会明确�
 `logs/91360_center-preview_20260922_12345.log`。`--output` 不存在时会自动递归
 创建。终止任务时只需
 `kill <PID>`，父进程会停止并回收全部 WSI worker。Linux parent-death signal 也会在
-父进程被 `kill -9` 时终止 WSI worker，但普通 `kill` 可以完整刷新日志与恢复状态。
+父进程被 `kill -9` 时终止 WSI worker 和 QC 服务，但普通 `kill` 可以完整刷新日志与恢复状态。
 输入清单逐行解析并通过有界队列提交，首条启动日志在扫描 WSI 前写入；大清单不会
 等待全部路径解析完才开始处理。日志中的 `input_progress` 会持续显示解析进度。
 
@@ -106,7 +106,7 @@ post_filters:
     batch_size: 128
 ```
 
-`qc` 使用仓库内置的 MobileNetV3-Large 权重（keep/reject）。父进程只启动一个 QC 服务、只加载一份模型；各 WSI worker 把 patch 送进去合批推理，再按各自 `index.json` 的 plan 顺序写回。`device: auto` 会选一张空闲显存足够的 GPU，没有则 warning 并用 CPU。未写入 pipe 时不加载 PyTorch、不占 GPU。`nonempty` 与 `qc` 相互独立，可单独或串联使用。
+`qc` 使用仓库内置的 MobileNetV3-Large 权重（keep/reject）。父进程只启动一个 QC 服务、只加载一份模型；各 WSI worker 把 patch 送进去合批推理，再按各自 `index.json` 的 plan 顺序写回。`device: auto` 通过 NVML（不可用时回退 `nvidia-smi`）查询空闲显存，不会为了选卡在每张 GPU 上创建 CUDA context；没有合适 GPU 时 warning 并用 CPU。未写入 pipe 时不加载 PyTorch、不占 GPU。`nonempty` 与 `qc` 相互独立，可单独或串联使用。
 
 ## 输出
 

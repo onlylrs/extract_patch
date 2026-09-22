@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
+import signal
+import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from ...concurrency import _terminate_if_parent_dies
 from .runtime import (
     QcClient,
     QcFilterSetupError,
@@ -18,6 +21,16 @@ from .runtime import (
 DEFAULT_MIN_FREE_BYTES = 1_073_741_824
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_COLLECT_TIMEOUT_MS = 8
+
+
+@dataclass(frozen=True)
+class _GpuMemory:
+    physical_index: int
+    uuid: str
+    pci_bus_id: str
+    free: int
+    total: int
+    logical_index: int = -1
 
 
 def qc_is_enabled(config: Any) -> bool:
@@ -35,29 +48,149 @@ def parse_device_request(value: Any) -> str:
     return text
 
 
-def _gpu_memory(index: int) -> tuple[int, int]:
-    import torch
+def _text(value: Any) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    free, total = torch.cuda.mem_get_info(index)
-    return int(free), int(total)
+
+def _query_gpu_memory_nvml() -> list[_GpuMemory]:
+    import pynvml
+
+    pynvml.nvmlInit()
+    try:
+        devices: list[_GpuMemory] = []
+        for index in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+            memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            pci = pynvml.nvmlDeviceGetPciInfo(handle)
+            devices.append(
+                _GpuMemory(
+                    physical_index=index,
+                    uuid=_text(pynvml.nvmlDeviceGetUUID(handle)),
+                    pci_bus_id=_text(pci.busId),
+                    free=int(memory.free),
+                    total=int(memory.total),
+                )
+            )
+        return devices
+    finally:
+        pynvml.nvmlShutdown()
+
+
+def _query_gpu_memory_smi() -> list[_GpuMemory]:
+    command = [
+        "nvidia-smi",
+        "--query-gpu=index,uuid,pci.bus_id,memory.free,memory.total",
+        "--format=csv,noheader,nounits",
+    ]
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    devices: list[_GpuMemory] = []
+    mib = 1024 * 1024
+    for line in result.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",")]
+        if not line.strip():
+            continue
+        if len(fields) != 5:
+            raise ValueError(f"Unexpected nvidia-smi output: {line!r}")
+        index, uuid, pci_bus_id, free_mib, total_mib = fields
+        devices.append(
+            _GpuMemory(
+                physical_index=int(index),
+                uuid=uuid,
+                pci_bus_id=pci_bus_id,
+                free=int(free_mib) * mib,
+                total=int(total_mib) * mib,
+            )
+        )
+    return devices
+
+
+def _query_gpu_memory() -> list[_GpuMemory]:
+    errors: list[str] = []
+    try:
+        return _query_gpu_memory_nvml()
+    except Exception as exc:
+        errors.append(f"NVML: {type(exc).__name__}: {exc}")
+    try:
+        return _query_gpu_memory_smi()
+    except Exception as exc:
+        errors.append(f"nvidia-smi: {type(exc).__name__}: {exc}")
+    raise QcFilterSetupError(
+        "Unable to inspect GPU memory without CUDA contexts ("
+        + "; ".join(errors)
+        + ")"
+    )
+
+
+def _matches_visible_token(device: _GpuMemory, token: str) -> bool:
+    if token.isdigit():
+        return device.physical_index == int(token)
+    token_lower = token.lower()
+    return device.uuid.lower().startswith(token_lower)
+
+
+def _visible_gpu_memory() -> list[_GpuMemory]:
+    devices = _query_gpu_memory()
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        tokens = [token.strip() for token in visible.split(",") if token.strip()]
+        mapped: list[_GpuMemory] = []
+        for logical_index, token in enumerate(tokens):
+            match = next(
+                (device for device in devices if _matches_visible_token(device, token)),
+                None,
+            )
+            if match is None:
+                continue
+            mapped.append(
+                _GpuMemory(
+                    physical_index=match.physical_index,
+                    uuid=match.uuid,
+                    pci_bus_id=match.pci_bus_id,
+                    free=match.free,
+                    total=match.total,
+                    logical_index=logical_index,
+                )
+            )
+        return mapped
+
+    ordered = devices
+    if os.environ.get("CUDA_DEVICE_ORDER", "").upper() == "PCI_BUS_ID":
+        ordered = sorted(devices, key=lambda device: device.pci_bus_id.lower())
+    return [
+        _GpuMemory(
+            physical_index=device.physical_index,
+            uuid=device.uuid,
+            pci_bus_id=device.pci_bus_id,
+            free=device.free,
+            total=device.total,
+            logical_index=logical_index,
+        )
+        for logical_index, device in enumerate(ordered)
+    ]
 
 
 def pick_gpu(min_free_bytes: int) -> tuple[Any | None, str | None]:
     try:
-        import torch
-    except ImportError as exc:
-        raise QcFilterSetupError(
-            "The qc post-filter requires PyTorch. Install with: pip install torch torchvision"
-        ) from exc
-    if not torch.cuda.is_available() or torch.cuda.device_count() <= 0:
-        return None, "CUDA is unavailable; using CPU for the qc filter"
+        devices = _visible_gpu_memory()
+    except QcFilterSetupError as exc:
+        return None, f"{exc}; using CPU for the qc filter"
+    if not devices:
+        return None, "No CUDA-visible GPU is available; using CPU for the qc filter"
     eligible: list[tuple[int, int, int]] = []
     details: list[str] = []
-    for index in range(torch.cuda.device_count()):
-        free, total = _gpu_memory(index)
-        details.append(f"cuda:{index} free={free / 1e9:.2f}G total={total / 1e9:.2f}G")
-        if free >= min_free_bytes:
-            eligible.append((free, total, index))
+    for device in devices:
+        details.append(
+            f"cuda:{device.logical_index} free={device.free / 1e9:.2f}G "
+            f"total={device.total / 1e9:.2f}G"
+        )
+        if device.free >= min_free_bytes:
+            eligible.append((device.free, device.total, device.logical_index))
     if not eligible:
         return None, (
             "No GPU has enough free memory for the qc filter "
@@ -65,7 +198,7 @@ def pick_gpu(min_free_bytes: int) -> tuple[Any | None, str | None]:
         )
     eligible.sort(reverse=True)
     _free, _total, index = eligible[0]
-    return torch.device(f"cuda:{index}"), None
+    return f"cuda:{index}", None
 
 
 def select_device(requested: Any, min_free_bytes: int) -> tuple[Any, str | None]:
@@ -79,25 +212,30 @@ def select_device(requested: Any, min_free_bytes: int) -> tuple[Any, str | None]
     if name == "cpu":
         return torch.device("cpu"), None
     if name in {"auto", "cuda"}:
-        device, warning = pick_gpu(min_free_bytes)
-        if device is None:
+        device_name, warning = pick_gpu(min_free_bytes)
+        if device_name is None:
             if name == "cuda":
                 raise QcFilterSetupError(warning or "CUDA was requested but no GPU is usable")
             return torch.device("cpu"), warning
-        return device, warning
+        return torch.device(device_name), warning
     device = torch.device(name)
     if device.type != "cuda":
         return device, None
-    if not torch.cuda.is_available():
-        raise QcFilterSetupError("CUDA was requested for the qc filter but is unavailable")
     index = 0 if device.index is None else int(device.index)
-    if index < 0 or index >= torch.cuda.device_count():
+    try:
+        devices = _visible_gpu_memory()
+    except QcFilterSetupError as exc:
+        raise QcFilterSetupError(f"Cannot validate requested qc device {device}: {exc}") from exc
+    memory = next(
+        (item for item in devices if item.logical_index == index),
+        None,
+    )
+    if memory is None:
         raise QcFilterSetupError(f"Requested qc device {device} does not exist")
-    free, total = _gpu_memory(index)
-    if free < min_free_bytes:
+    if memory.free < min_free_bytes:
         raise QcFilterSetupError(
-            f"Requested {device} has {free / 1e9:.2f}G free, "
-            f"need {min_free_bytes / 1e9:.2f}G (total {total / 1e9:.2f}G)"
+            f"Requested {device} has {memory.free / 1e9:.2f}G free, "
+            f"need {min_free_bytes / 1e9:.2f}G (total {memory.total / 1e9:.2f}G)"
         )
     return torch.device(f"cuda:{index}"), None
 
@@ -137,9 +275,18 @@ def _reply_connections(
                 pass
 
 
-def _qc_server_entry(ready_queue, options: dict[str, Any], authkey: bytes) -> None:
+def _qc_server_entry(
+    ready_queue,
+    options: dict[str, Any],
+    authkey: bytes,
+    parent_pid: int,
+) -> None:
     import threading
     from multiprocessing.connection import Listener, wait
+
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _terminate_if_parent_dies(parent_pid)
 
     listener = None
     try:
@@ -322,7 +469,7 @@ def start_qc_service(
     authkey = os.urandom(16)
     process = context.Process(
         target=_qc_server_entry,
-        args=(ready_queue, cfg, authkey),
+        args=(ready_queue, cfg, authkey, os.getpid()),
         name="extract-qc",
         daemon=True,
     )

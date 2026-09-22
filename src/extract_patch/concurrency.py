@@ -17,9 +17,18 @@ class WorkerSystemError(RuntimeError):
     """A worker process exited or raised outside normal per-WSI handling."""
 
 
-def _terminate_if_parent_dies() -> None:
-    """Ask Linux to terminate this worker even if the parent receives SIGKILL."""
-    parent_pid = os.getppid()
+def _terminate_if_parent_dies(expected_parent_pid: int | None = None) -> None:
+    """Ask Linux to terminate this worker even if the parent receives SIGKILL.
+
+    ``expected_parent_pid`` closes the race where the parent exits before the
+    child has installed PR_SET_PDEATHSIG.  Without it, an already orphaned
+    child would mistake init/systemd for its real parent and keep running.
+    """
+    parent_pid = (
+        os.getppid() if expected_parent_pid is None else int(expected_parent_pid)
+    )
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGTERM)
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, int(signal.SIGTERM)) != 0:  # PR_SET_PDEATHSIG
         error = ctypes.get_errno()
@@ -46,10 +55,11 @@ def _process_worker_loop(
     results: Connection,
     worker: Callable[..., Any],
     worker_args: tuple[Any, ...],
+    parent_pid: int,
 ) -> None:
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    _terminate_if_parent_dies()
+    _terminate_if_parent_dies(parent_pid)
     try:
         while True:
             task = tasks.get()
@@ -98,6 +108,7 @@ def process_map(
     processes: list[mp.Process] = []
     receivers: list[Connection] = []
     senders: list[Connection] = []
+    parent_pid = os.getpid()
     for index in range(worker_count):
         receiver, sender = context.Pipe(duplex=False)
         receivers.append(receiver)
@@ -105,7 +116,7 @@ def process_map(
         processes.append(
             context.Process(
                 target=_process_worker_loop,
-                args=(task_queue, sender, worker, worker_args),
+                args=(task_queue, sender, worker, worker_args, parent_pid),
                 name=f"{process_name}-{index + 1}",
             )
         )
