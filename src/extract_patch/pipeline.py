@@ -436,7 +436,7 @@ def _extract_slide(
                 save_center_previews(
                     thumbnail,
                     decision,
-                    plans,
+                    [plan for plan in plans if plan.index in outputs_by_plan_index],
                     Path(config.output.root).parent / "preview",
                     spec.slide_id,
                 )

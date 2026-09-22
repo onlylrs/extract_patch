@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import cv2
 import numpy as np
@@ -14,12 +14,42 @@ from .filters import PatchFilterPipeline
 from .filters.qc.runtime import bind_qc_client
 from .filters.qc.service import running_qc_service
 from .heuristics import HeuristicPipeline
-from .models import RunResult, SlideResult, SlideSpec
+from .models import PatchPlan, RunResult, SlideResult, SlideSpec
 from .planner import effective_patching, plan_patches
 from .permissions import chmod_tree
 from .readers import open_reader
 from .reporting import RunLogger, make_run_id, save_center_previews, save_overlay
 from .sinks.base import prepare_image
+
+
+def _filter_preview_plans(
+    reader: Any,
+    plans: list[PatchPlan],
+    config: AppConfig,
+) -> list[PatchPlan]:
+    """Return only plans accepted by the configured post-filter pipeline."""
+    if not config.post_filter_pipe or not plans:
+        return plans
+
+    estimated_bytes = max(1, config.patching.output_size**2 * 3)
+    byte_limited = max(1, config.parallel.max_inflight_bytes // estimated_bytes)
+    batch_size = max(1, min(config.parallel.max_inflight_patches, byte_limited))
+    filter_pipeline = PatchFilterPipeline.from_config(config)
+    kept: list[PatchPlan] = []
+    for start in range(0, len(plans), batch_size):
+        items = []
+        for plan in plans[start : start + batch_size]:
+            patch = reader.read_region(
+                (plan.x, plan.y),
+                plan.level,
+                (plan.read_size, plan.read_size),
+            ).convert("RGB")
+            items.append((prepare_image(patch, plan), plan))
+        decisions = filter_pipeline.run_many(items)
+        kept.extend(
+            plan for (_image, plan), decision in zip(items, decisions) if decision.keep
+        )
+    return kept
 
 
 def _preview_slide(
@@ -50,6 +80,7 @@ def _preview_slide(
                 metadata.level_downsamples[config.patching.level],
             )
             plans = plan_patches(metadata, decision.region, effective)
+            plans = _filter_preview_plans(reader, plans, config)
             rng = np.random.default_rng(config.preview.seed)
             n = min(config.preview.n_patches, len(plans))
             candidate_indices = rng.permutation(len(plans)).tolist() if n else []
@@ -57,7 +88,6 @@ def _preview_slide(
             sample_dir = destination / "patches"
             if candidate_indices:
                 sample_dir.mkdir(parents=True, exist_ok=True)
-            filter_pipeline = PatchFilterPipeline.from_config(config)
             saved = 0
             for index in candidate_indices:
                 plan = plans[index]
@@ -67,8 +97,6 @@ def _preview_slide(
                     (plan.read_size, plan.read_size),
                 ).convert("RGB")
                 patch = prepare_image(patch, plan)
-                if not filter_pipeline.run(patch, plan).keep:
-                    continue
                 patch.save(
                     sample_dir
                     / f"sample_{saved:02d}_x{plan.x}_y{plan.y}_l{plan.level}.jpg",
@@ -101,7 +129,9 @@ def _center_preview_slide(
     spec: SlideSpec,
     config: AppConfig,
     output_root: Path,
+    qc_client=None,
 ) -> SlideResult:
+    bind_qc_client(qc_client)
     started = time.perf_counter()
     cv2.setNumThreads(config.parallel.opencv_threads)
     try:
@@ -110,21 +140,23 @@ def _center_preview_slide(
             width = config.reader.thumbnail_width
             height = max(1, round(width * metadata.dimensions[1] / metadata.dimensions[0]))
             thumbnail = reader.thumbnail((width, height)).convert("RGB")
-        decision = HeuristicPipeline.from_config(config).run(
-            np.asarray(thumbnail), metadata.dimensions
-        )
-        if decision.status != "accepted" or decision.region is None:
-            raise RuntimeError(f"Heuristic pipeline failed: {decision.reason}")
-        effective = effective_patching(
-            config.patching,
-            metadata.mpp,
-            metadata.level_downsamples[config.patching.level],
-        )
-        plans = plan_patches(metadata, decision.region, effective)
+            decision = HeuristicPipeline.from_config(config).run(
+                np.asarray(thumbnail), metadata.dimensions
+            )
+            if decision.status != "accepted" or decision.region is None:
+                raise RuntimeError(f"Heuristic pipeline failed: {decision.reason}")
+            effective = effective_patching(
+                config.patching,
+                metadata.mpp,
+                metadata.level_downsamples[config.patching.level],
+            )
+            plans = plan_patches(metadata, decision.region, effective)
+            plans = _filter_preview_plans(reader, plans, config)
         save_center_previews(thumbnail, decision, plans, output_root, spec.slide_id)
         result = SlideResult(
             slide_id=spec.slide_id,
             status="success",
+            patch_count=len(plans),
             reader=metadata.reader,
             heuristic=decision.name,
             color_correction=metadata.properties.get("extract_patch.color_correction"),
@@ -257,15 +289,17 @@ def center_preview(
         logger.record_slide(result)
 
     try:
-        process_map(
-            _center_preview_slide,
-            iter_pending_specs(),
-            config,
-            output_root,
-            max_workers=config.parallel.slide_workers,
-            process_name="center-preview-wsi",
-            on_result=record_result,
-        )
+        with running_qc_service(config, logger.logger) as qc_client:
+            process_map(
+                _center_preview_slide,
+                iter_pending_specs(),
+                config,
+                output_root,
+                qc_client,
+                max_workers=config.parallel.slide_workers,
+                process_name="center-preview-wsi",
+                on_result=record_result,
+            )
         logger.logger.info("Input stream complete: resolved=%d", resolved)
         results = [results_by_id[slide_id] for slide_id in ordered_ids]
         chmod_tree(output_root, parse_permission_mode(config.output.permissions))

@@ -46,10 +46,11 @@ TXT（一行一个路径，引号可有可无）. 示例：
 ./run_extract.sh --preview --input-list inputs.txt --config configs/poh.yaml
 ```
 
-Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.jpg`，以及随机保存8张patches `patches/`供检查.
+Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.jpg`，以及随机保存8张patches `patches/`供检查；配置了后筛时，网格和样本均只包含后筛保留的 patch。
 默认保存在 `outputs/preview/`.
 
-只检查正式 extraction 使用的 thumbnail 和 foreground mask，不读取 patch：
+只检查正式 extraction 使用的 thumbnail 和 foreground mask；未配置后筛时不读取 patch，
+配置了后筛时会读取候选 patch，以便 mask preview 反映后筛结果：
 
 ```bash
 ./run_extract.sh --center-preview --input-list inputs/0.txt \
@@ -58,7 +59,7 @@ Preview 功能会按照当前配置的策略导出WSI的分割区域图`contour.
 
 这里的 `--output` 仍表示 patch 根目录；检查结果会写到同级的
 `preview/thumbnail/` 和 `preview/mask/`。其中 mask 图片是与 preview 模式
-`contour.jpg` 相同的分割轮廓和 patch 网格可视化，不是黑白二值 mask。再次运行时，
+`contour.jpg` 相同的分割轮廓和后筛后 patch 网格可视化，不是黑白二值 mask。再次运行时，
 已同时生成 thumbnail 和 mask 的 WSI 会跳过；只生成其中一个的 WSI 会重新处理。
 
 ### level, mpp, size

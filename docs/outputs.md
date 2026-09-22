@@ -14,7 +14,8 @@
 
 正式提取成功后，在 patch 根目录的同级 `preview/` 中保存
 `thumbnail/<WSI>.jpeg` 和 `mask/<WSI>.jpg`。后者是带分割轮廓与 patch 网格的
-thumbnail 可视化，与 preview 模式的 `contour.jpg` 相同。
+thumbnail 可视化，与 preview 模式的 `contour.jpg` 相同；配置后筛时只绘制实际
+保留的 patch 网格。
 
 所有输出文件、目录和子目录在本次写入完成后都会递归应用
 `output.permissions`，默认是 `"777"`。TAR 内 JPEG 成员的 mode 也使用同一配置。
