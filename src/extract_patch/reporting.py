@@ -4,7 +4,9 @@ import csv
 import hashlib
 import json
 import logging
+import multiprocessing as mp
 import os
+import signal
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -19,6 +21,75 @@ from PIL import Image, ImageDraw
 
 from .config import AppConfig, config_dict, dump_config
 from .models import HeuristicDecision, PatchPlan, PatchRecord, SlideResult
+
+
+def _append_parent_death_record(log_path: str, parent_pid: int) -> None:
+    timestamp = datetime.now().strftime("%Y%m%d %H:%M:%S")
+    message = (
+        f"E{timestamp} {parent_pid} reporting.py:0] "
+        "run_aborted reason=parent_process_disappeared "
+        f"parent_pid={parent_pid} "
+        "possible_cause=SIGKILL_SIGTERM_OOM_or_host_termination\n"
+    ).encode("utf-8", errors="replace")
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666)
+    try:
+        os.write(descriptor, message)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _parent_death_reporter_entry(receiver, sender, parent_pid: int, log_path: str) -> None:
+    sender.close()
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        while True:
+            if receiver.poll(0.2):
+                try:
+                    receiver.recv_bytes()
+                except EOFError:
+                    if os.getppid() != parent_pid:
+                        _append_parent_death_record(log_path, parent_pid)
+                return
+            if os.getppid() != parent_pid:
+                _append_parent_death_record(log_path, parent_pid)
+                return
+    finally:
+        receiver.close()
+
+
+class _ParentDeathReporter:
+    """Record an uncatchable parent death, then exit without lingering."""
+
+    def __init__(self, log_path: Path, parent_pid: int) -> None:
+        context = mp.get_context("fork")
+        receiver, sender = context.Pipe(duplex=False)
+        self._sender = sender
+        self._process = context.Process(
+            target=_parent_death_reporter_entry,
+            args=(receiver, sender, int(parent_pid), str(log_path)),
+            name="extract-death-reporter",
+            daemon=True,
+        )
+        self._process.start()
+        receiver.close()
+
+    @property
+    def pid(self) -> int | None:
+        return self._process.pid
+
+    def close(self) -> None:
+        if not self._sender.closed:
+            try:
+                self._sender.send_bytes(b"clean")
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+            self._sender.close()
+        self._process.join(timeout=2)
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=2)
 
 
 def make_run_id(prefix: str = "run") -> str:
@@ -70,6 +141,7 @@ class RunLogger:
             self._manifest_writer.writeheader()
         self._signature.write_text(self.config_signature + "\n", encoding="utf-8")
         self._configure_logging(config.logging.level)
+        self._death_reporter = _ParentDeathReporter(self.path, os.getpid())
         self.logger.info(
             "Run details:\n"
             "  run_id: %s\n"
@@ -132,11 +204,15 @@ class RunLogger:
                 with self._failures.open("a", encoding="utf-8") as handle:
                     handle.write(f"{result.slide_id}\t{result.error or 'unknown error'}\n")
 
-    def close(self) -> None:
+    def _close_manifest(self) -> None:
         with self._lock:
             if not self._manifest_handle.closed:
                 self._manifest_handle.flush()
                 self._manifest_handle.close()
+
+    def close(self) -> None:
+        self._close_manifest()
+        self._death_reporter.close()
 
     def abort(self, message: str) -> None:
         self.logger.critical(message, exc_info=True)
@@ -155,7 +231,7 @@ class RunLogger:
         return outputs
 
     def finalize(self, results: list[SlideResult]) -> dict[str, Any]:
-        self.close()
+        self._close_manifest()
         success = bool(results) and all(result.status in {"success", "skipped"} for result in results)
         summary = {
             "run_id": self.run_id,
@@ -181,6 +257,7 @@ class RunLogger:
                 self._state_dir.parent.rmdir()
             except OSError:
                 pass
+        self._death_reporter.close()
         return summary
 
 

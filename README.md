@@ -83,7 +83,7 @@ sRGB；没有 ICC profile 时保持原始颜色。每张 WSI 的日志会明确�
 `logs/91360_center-preview_20260922_12345.log`。`--output` 不存在时会自动递归
 创建。终止任务时只需
 `kill <PID>`，父进程会停止并回收全部 WSI worker。Linux parent-death signal 也会在
-父进程被 `kill -9` 时终止 WSI worker 和 QC 服务，但普通 `kill` 可以完整刷新日志与恢复状态。
+父进程被 `kill -9` 时终止 WSI worker 和 QC 服务；独立的 death reporter 会在日志追加 `run_aborted` 后立即退出。普通 `kill` 可以由主进程捕获并完整刷新日志与恢复状态。
 输入清单逐行解析并通过有界队列提交，首条启动日志在扫描 WSI 前写入；大清单不会
 等待全部路径解析完才开始处理。日志中的 `input_progress` 会持续显示解析进度。
 
