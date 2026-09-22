@@ -240,12 +240,15 @@ def select_device(requested: Any, min_free_bytes: int) -> tuple[Any, str | None]
     return torch.device(f"cuda:{index}"), None
 
 
-def _infer_numpy(session: QcSession, batch, max_batch: int) -> list[float]:
+def _infer_batch(session: QcSession, batch, max_batch: int) -> list[float]:
     scores: list[float] = []
     start = 0
     while start < len(batch):
         end = min(start + max_batch, len(batch))
-        scores.extend(session.predict_numpy(batch[start:end]))
+        if batch.dtype.name == "uint8":
+            scores.extend(session.predict_uint8(batch[start:end]))
+        else:
+            scores.extend(session.predict_numpy(batch[start:end]))
         start = end
     return scores
 
@@ -254,18 +257,33 @@ def _reply_connections(
     pending: list[tuple[Any, Any]],
     session: QcSession,
     max_batch: int,
-) -> None:
+) -> dict[str, float]:
     import numpy as np
 
     connections = [item[0] for item in pending]
     arrays = [item[1] for item in pending]
+    metrics = {
+        "requests": float(len(arrays)),
+        "patches": float(sum(int(array.shape[0]) for array in arrays)),
+        "ipc_bytes": float(sum(int(array.nbytes) for array in arrays)),
+        "concatenate_seconds": 0.0,
+        "inference_seconds": 0.0,
+        "reply_seconds": 0.0,
+    }
     try:
-        scores = _infer_numpy(session, np.concatenate(arrays, axis=0), max_batch)
+        started = time.perf_counter()
+        combined = np.concatenate(arrays, axis=0)
+        metrics["concatenate_seconds"] = time.perf_counter() - started
+        started = time.perf_counter()
+        scores = _infer_batch(session, combined, max_batch)
+        metrics["inference_seconds"] = time.perf_counter() - started
+        started = time.perf_counter()
         offset = 0
         for connection, array in zip(connections, arrays):
             count = int(array.shape[0])
             connection.send(scores[offset : offset + count])
             offset += count
+        metrics["reply_seconds"] = time.perf_counter() - started
     except Exception as exc:
         payload = {"error": f"{type(exc).__name__}: {exc}"}
         for connection in connections:
@@ -273,6 +291,23 @@ def _reply_connections(
                 connection.send(payload)
             except (EOFError, OSError, BrokenPipeError):
                 pass
+    return metrics
+
+
+def _qc_metrics_logger() -> logging.Logger:
+    logger = logging.getLogger("extract_patch.qc_service.metrics")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                fmt="%(levelname).1s%(asctime)s %(process)d %(filename)s:%(lineno)d] %(message)s",
+                datefmt="%Y%m%d %H:%M:%S",
+            )
+        )
+        logger.addHandler(handler)
+    return logger
 
 
 def _qc_server_entry(
@@ -324,9 +359,15 @@ def _qc_server_entry(
         0.0,
         float(options.get("collect_timeout_ms", DEFAULT_COLLECT_TIMEOUT_MS)) / 1000.0,
     )
+    metrics_interval = max(1.0, float(options.get("metrics_interval_seconds", 30)))
+    metrics_logger = _qc_metrics_logger()
     connections: list[Any] = []
     conn_lock = threading.Lock()
     running = True
+
+    # Keep the legacy wait/recv and aggregation order. CUDA scores can vary with
+    # batch shape, so changing reception scheduling could flip a near-threshold
+    # keep/reject decision even when every model input is bitwise identical.
 
     def accept_loop() -> None:
         while running:
@@ -339,15 +380,51 @@ def _qc_server_entry(
 
     acceptor = threading.Thread(target=accept_loop, name="extract-qc-accept", daemon=True)
     acceptor.start()
+    interval_started = time.monotonic()
+    interval_metrics = {
+        "requests": 0.0,
+        "patches": 0.0,
+        "ipc_bytes": 0.0,
+        "concatenate_seconds": 0.0,
+        "inference_seconds": 0.0,
+        "reply_seconds": 0.0,
+    }
+
+    def log_metrics_if_due(*, force: bool = False) -> None:
+        nonlocal interval_started, interval_metrics
+        now = time.monotonic()
+        elapsed = now - interval_started
+        if not force and elapsed < metrics_interval:
+            return
+        patches = int(interval_metrics["patches"])
+        if patches:
+            metrics_logger.info(
+                "qc_progress transport=uint8 requests=%d "
+                "patches=%d patches_per_second=%.2f ipc_mib=%.2f "
+                "concatenate_seconds=%.3f inference_seconds=%.3f "
+                "reply_seconds=%.3f",
+                int(interval_metrics["requests"]),
+                patches,
+                patches / max(elapsed, 1e-9),
+                interval_metrics["ipc_bytes"] / (1024 * 1024),
+                interval_metrics["concatenate_seconds"],
+                interval_metrics["inference_seconds"],
+                interval_metrics["reply_seconds"],
+            )
+        interval_started = now
+        interval_metrics = {key: 0.0 for key in interval_metrics}
+
     try:
         while running:
             with conn_lock:
                 current = list(connections)
             if not current:
                 time.sleep(0.001)
+                log_metrics_if_due()
                 continue
             ready = wait(current, timeout=1.0)
             if not ready:
+                log_metrics_if_due()
                 continue
             pending: list[tuple[Any, Any]] = []
             counted = 0
@@ -369,6 +446,7 @@ def _qc_server_entry(
             if not pending:
                 if not running:
                     break
+                log_metrics_if_due()
                 continue
             deadline = time.monotonic() + collect_timeout
             while running and counted < max_batch:
@@ -398,8 +476,12 @@ def _qc_server_entry(
                     pending.append((connection, payload))
                     counted += int(payload.shape[0])
             if pending:
-                _reply_connections(pending, session, max_batch)
+                batch_metrics = _reply_connections(pending, session, max_batch)
+                for key, value in batch_metrics.items():
+                    interval_metrics[key] += value
+            log_metrics_if_due()
     finally:
+        log_metrics_if_due(force=True)
         running = False
         try:
             listener.close()
@@ -417,6 +499,7 @@ def _qc_server_entry(
                 connection.close()
             except Exception:
                 pass
+        acceptor.join(timeout=1)
 
 
 
@@ -504,7 +587,8 @@ def log_qc_service(logger: logging.Logger, service: QcService) -> None:
     if service.warning:
         logger.warning("%s", service.warning)
     logger.info(
-        "qc_service device=%s version=%s threshold=%.4f input_size=%d",
+        "qc_service device=%s version=%s threshold=%.4f input_size=%d "
+        "transport=uint8",
         service.device,
         service.client.version,
         service.client.threshold,

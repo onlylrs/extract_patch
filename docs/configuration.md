@@ -27,10 +27,11 @@ post_filters:
     threshold: null           # 默认使用预览时的 ckpt 内阈值 0.146775
     batch_size: 128           # 共享 QC 进程的 GPU 合批上限
     collect_timeout_ms: 8     # 跨 WSI worker 合批等待
+    metrics_interval_seconds: 30  # QC 吞吐与各阶段耗时日志间隔
     min_free_bytes: 1073741824  # auto 选卡时的空闲显存下限
 ```
 
-`qc` 由父进程启动**一个** spawn 服务进程，模型只加载一次。WSI worker 只做 CPU 预处理并把 batch 送进该服务；服务按 `batch_size` 把多个 worker 的请求拼成一次 GPU forward。`device: auto`（默认）通过 NVML（不可用时回退 `nvidia-smi`）查询所有可见 GPU 的空闲显存，选卡过程不会创建 CUDA context；都不够则 warning 并回退 CPU。显式 `cuda:N` 时若该卡不存在或显存不够则报错。未列入 pipe 时不会启动服务、不加载模型。父进程退出（包括 `SIGKILL`）时，QC 服务和 WSI worker 都会由 Linux parent-death signal 终止；若主进程来不及自行记录错误，death reporter 会向同一日志追加 `run_aborted` 后退出。
+`qc` 由父进程启动**一个** spawn 服务进程，模型只加载一次。WSI worker 将 resize 后的 `uint8` batch 送入 QC 服务；服务在 CPU 上按旧版完全相同的运算顺序转换为 float32 并归一化，再保留旧版接收与合批顺序做 GPU forward。与传输 float32 相比，IPC 数据量降低 75%，而模型输入逐 bit 一致。`device: auto`（默认）通过 NVML（不可用时回退 `nvidia-smi`）查询所有可见 GPU 的空闲显存，选卡过程不会创建 CUDA context；都不够则 warning 并回退 CPU。显式 `cuda:N` 时若该卡不存在或显存不够则报错。未列入 pipe 时不会启动服务、不加载模型。父进程退出（包括 `SIGKILL`）时，QC 服务和 WSI worker 都会由 Linux parent-death signal 终止；若主进程来不及自行记录错误，death reporter 会向同一日志追加 `run_aborted` 后退出。
 
 - `patching`：level、输出 `mpp`、patch/output size、stride、mask 覆盖率、采样上限。
   `mpp: null` 时保留指定 level 的原生 MPP；设置数值时按该 level 读取后使用 LANCZOS

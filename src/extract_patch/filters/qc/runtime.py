@@ -16,6 +16,42 @@ MANIFEST_PATH = ASSETS / "manifest.json"
 _CLIENT: QcClient | None = None
 
 
+def _images_to_uint8_batch(images: Sequence[Image.Image], input_size: int):
+    """Resize exactly like the legacy torchvision pipeline, without float expansion."""
+    import numpy as np
+
+    arrays = []
+    for image in images:
+        resized = image.convert("RGB").resize(
+            (input_size, input_size),
+            resample=Image.Resampling.BILINEAR,
+        )
+        arrays.append(np.asarray(resized, dtype=np.uint8).transpose(2, 0, 1))
+    return np.ascontiguousarray(np.stack(arrays), dtype=np.uint8)
+
+
+def _normalize_uint8_batch(batch):
+    """Reproduce ToTensor + Normalize bit-for-bit after uint8 IPC transport."""
+    import numpy as np
+    import torch
+    from torchvision.transforms import functional as functional
+
+    array = np.ascontiguousarray(batch)
+    if array.dtype != np.uint8:
+        raise QcFilterSetupError(f"QC uint8 batch has dtype {array.dtype}, expected uint8")
+    tensor = torch.from_numpy(array)
+    if tensor.ndim != 4 or tensor.shape[1] != 3:
+        raise QcFilterSetupError(
+            f"QC uint8 batch must be NCHW with 3 channels, got {tuple(tensor.shape)}"
+        )
+    tensor = tensor.to(dtype=torch.get_default_dtype()).div(255)
+    return functional.normalize(
+        tensor,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    )
+
+
 class QcFilterSetupError(RuntimeError):
     """Raised when the qc filter cannot be initialized or reached."""
 
@@ -97,6 +133,13 @@ class QcSession:
         self.transform = preprocessing(self.input_size)
         self._torch = torch
 
+    def _predict_tensor(self, tensor) -> list[float]:
+        torch = self._torch
+        tensor = tensor.to(self.device, non_blocking=self.device.type == "cuda")
+        with torch.inference_mode():
+            probabilities = torch.softmax(self.model(tensor), dim=1)[:, 1]
+        return [float(value) for value in probabilities.detach().cpu()]
+
     def predict_numpy(self, batch) -> list[float]:
         import numpy as np
 
@@ -104,10 +147,10 @@ class QcSession:
         tensor = torch.from_numpy(np.ascontiguousarray(batch, dtype="float32"))
         if tensor.ndim != 4:
             raise QcFilterSetupError(f"QC batch must be NCHW, got {tuple(tensor.shape)}")
-        tensor = tensor.to(self.device, non_blocking=self.device.type == "cuda")
-        with torch.inference_mode():
-            probabilities = torch.softmax(self.model(tensor), dim=1)[:, 1]
-        return [float(value) for value in probabilities.detach().cpu()]
+        return self._predict_tensor(tensor)
+
+    def predict_uint8(self, batch) -> list[float]:
+        return self._predict_tensor(_normalize_uint8_batch(batch))
 
     def predict(self, images: Sequence[Image.Image]) -> list[float]:
         if not images:
@@ -119,7 +162,7 @@ class QcSession:
 
 
 class QcClient:
-    """CPU-side client that sends preprocessed batches to the shared QC process."""
+    """CPU-side client that sends compact uint8 batches to the shared QC process."""
 
     def __init__(
         self,
@@ -139,21 +182,14 @@ class QcClient:
         self.threshold = float(threshold)
         self.version = str(version)
         self.device = str(device)
-        self._transform = None
         self._conn = None
         self._lock = None
 
     def __getstate__(self):
         state = dict(self.__dict__)
-        state["_transform"] = None
         state["_conn"] = None
         state["_lock"] = None
         return state
-
-    def _cpu_transform(self):
-        if self._transform is None:
-            self._transform = preprocessing(self.input_size)
-        return self._transform
 
     def _lock_obj(self):
         if self._lock is None:
@@ -172,13 +208,7 @@ class QcClient:
     def predict(self, images: Sequence[Image.Image]) -> list[float]:
         if not images:
             return []
-        import numpy as np
-
-        transform = self._cpu_transform()
-        batch = np.ascontiguousarray(
-            np.stack([transform(image.convert("RGB")).numpy() for image in images]),
-            dtype=np.float32,
-        )
+        batch = _images_to_uint8_batch(images, self.input_size)
         with self._lock_obj():
             try:
                 conn = self._connection()
