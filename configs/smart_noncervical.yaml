@@ -41,9 +41,9 @@ post_filters:
 patching:
   level: 0
   mpp: 0.5
-  patch_size: 600
-  output_size: 600
-  stride: 600
+  patch_size: 300
+  output_size: 300
+  stride: 300
   min_region_fraction: 0.10
   inclusion: fraction
 
