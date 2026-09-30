@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from extract_patch.config import AppConfig
 from extract_patch.filters.base import FilterDecision
-from extract_patch.models import PatchPlan
+from extract_patch.models import PatchPlan, SlideMetadata, SlideSpec
 from extract_patch import preview
 
 
@@ -65,3 +68,44 @@ def test_filter_preview_plans_avoids_reads_without_post_filters() -> None:
     reader = SimpleNamespace()
 
     assert preview._filter_preview_plans(reader, plans, config) is plans
+
+
+@pytest.mark.parametrize("worker", [preview._preview_slide, preview._center_preview_slide])
+def test_large_single_level_slide_skips_before_thumbnail(monkeypatch, tmp_path: Path, worker) -> None:
+    metadata = SlideMetadata(
+        dimensions=(92928, 89856),
+        level_dimensions=((92928, 89856), (23232, 22464), (5808, 5616)),
+        level_downsamples=(1.0, 4.0, 16.0),
+        mpp=0.5,
+        reader="aslide",
+    )
+
+    @contextmanager
+    def fake_open_reader(_spec, _config):
+        yield SimpleNamespace(
+            metadata=metadata,
+            source_level_count=1,
+            thumbnail=lambda _size: pytest.fail("thumbnail should not be read"),
+        )
+
+    monkeypatch.setattr(preview, "open_reader", fake_open_reader)
+    spec = SlideSpec(tmp_path / "slide.tif", tmp_path / "slide.tif", "slide")
+
+    result = worker(spec, AppConfig(), tmp_path)
+
+    assert result.status == "skipped"
+    assert "source has one level" in result.error
+    assert not (tmp_path / "slide").exists()
+
+
+def test_large_slide_with_real_pyramid_is_not_skipped() -> None:
+    metadata = SlideMetadata(
+        dimensions=(92928, 89856),
+        level_dimensions=((92928, 89856), (23232, 22464)),
+        level_downsamples=(1.0, 4.0),
+        mpp=0.5,
+        reader="aslide",
+    )
+    reader = SimpleNamespace(metadata=metadata, source_level_count=2)
+
+    assert preview._large_single_level_skip_reason(reader) is None

@@ -32,6 +32,7 @@ class OpenSlideReader(ReaderBase):
         self._slide = constructor(str(self.path))
         self._closed = False
         try:
+            self.source_level_count = int(self._slide.level_count)
             self._metadata = normalized_metadata(self._slide, "openslide")
         except Exception:
             self.close()

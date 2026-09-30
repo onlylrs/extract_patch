@@ -22,6 +22,22 @@ from .reporting import RunLogger, make_run_id, save_center_previews, save_overla
 from .sinks.base import prepare_image
 
 
+_SINGLE_LEVEL_PREVIEW_PIXEL_LIMIT = 16_000_000
+
+
+def _large_single_level_skip_reason(reader: Any) -> str | None:
+    metadata = reader.metadata
+    source_level_count = getattr(reader, "source_level_count", len(metadata.level_dimensions))
+    pixels = metadata.dimensions[0] * metadata.dimensions[1]
+    if source_level_count == 1 and pixels > _SINGLE_LEVEL_PREVIEW_PIXEL_LIMIT:
+        return (
+            "Skipped preview: source has one level and "
+            f"{pixels:,} pixels ({metadata.dimensions[0]}x{metadata.dimensions[1]}); "
+            f"limit is {_SINGLE_LEVEL_PREVIEW_PIXEL_LIMIT:,} pixels"
+        )
+    return None
+
+
 def _filter_preview_plans(
     reader: Any,
     plans: list[PatchPlan],
@@ -62,10 +78,19 @@ def _preview_slide(
     started = time.perf_counter()
     cv2.setNumThreads(config.parallel.opencv_threads)
     destination = output_root / spec.slide_id
-    destination.mkdir(parents=True, exist_ok=True)
     try:
         with open_reader(spec, config.reader) as reader:
             metadata = reader.metadata
+            skip_reason = _large_single_level_skip_reason(reader)
+            if skip_reason is not None:
+                return SlideResult(
+                    slide_id=spec.slide_id,
+                    status="skipped",
+                    reader=metadata.reader,
+                    elapsed_seconds=time.perf_counter() - started,
+                    error=skip_reason,
+                )
+            destination.mkdir(parents=True, exist_ok=True)
             width = config.reader.thumbnail_width
             height = max(1, round(width * metadata.dimensions[1] / metadata.dimensions[0]))
             thumbnail = reader.thumbnail((width, height)).convert("RGB")
@@ -137,6 +162,15 @@ def _center_preview_slide(
     try:
         with open_reader(spec, config.reader) as reader:
             metadata = reader.metadata
+            skip_reason = _large_single_level_skip_reason(reader)
+            if skip_reason is not None:
+                return SlideResult(
+                    slide_id=spec.slide_id,
+                    status="skipped",
+                    reader=metadata.reader,
+                    elapsed_seconds=time.perf_counter() - started,
+                    error=skip_reason,
+                )
             width = config.reader.thumbnail_width
             height = max(1, round(width * metadata.dimensions[1] / metadata.dimensions[0]))
             thumbnail = reader.thumbnail((width, height)).convert("RGB")

@@ -184,6 +184,8 @@ class RunLogger:
         with self._lock:
             if result.status == "failed":
                 log = self.logger.error
+            elif result.status == "skipped" and result.error:
+                log = self.logger.warning
             elif (result.color_correction or "").startswith("unavailable:"):
                 log = self.logger.warning
             else:

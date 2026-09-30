@@ -91,6 +91,8 @@ class ASlideReader(ReaderBase):
         self._slide = _open(module or _load_aslide(), self.path)
         self._closed = False
         try:
+            source = getattr(self._slide, "backend", self._slide)
+            self.source_level_count = int(source.level_count)
             (
                 self._rgb_color_transform,
                 self._rgba_color_transform,
