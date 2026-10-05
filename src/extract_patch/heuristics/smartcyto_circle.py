@@ -32,13 +32,15 @@ def feature_edge(rgb):
     )
     edge = np.zeros((height, width), dtype=np.float32)
     for feature in features:
-        low, high = np.percentile(feature, [2, 98])
+        # NumPy 2 promotes float32 arrays when combined with percentile's
+        # float64 scalars; Sobel cannot convert a float64 input to CV_32F.
+        low, high = map(float, np.percentile(feature, [2, 98]))
         normalized = (feature - low) / max(1e-6, high - low)
         grad_x = cv2.Sobel(normalized, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(normalized, cv2.CV_32F, 0, 1, ksize=3)
         edge += np.hypot(grad_x, grad_y)
     edge = cv2.GaussianBlur(edge, (0, 0), max(1.0, min_dim * 0.006))
-    return edge / max(1e-6, np.percentile(edge, 99.5))
+    return edge / max(1e-6, float(np.percentile(edge, 99.5)))
 
 
 def estimate_pad_bounds(rgb):
@@ -292,8 +294,8 @@ def candidate_metrics(rgb, edge, circle):
     center_distance = np.hypot(x - width / 2, y - height / 2) / max(1.0, min_dim)
     radius_ratio = radius / max(1.0, min_dim)
     contrast_score = min(1.0, color_delta / 18.0 + texture_delta / 25.0)
-    content_score = min(1.0, content_spread / 0.45 + stain_ratio / 0.05) / 2
-    boundary_score = min(1.0, boundary_coverage / 0.65 + boundary_strength / 0.35) / 2
+    content_score = min(1.0, (content_spread / 0.45 + stain_ratio / 0.05) / 2)
+    boundary_score = min(1.0, (boundary_coverage / 0.65 + boundary_strength / 0.35) / 2)
     score = 0.42 * boundary_score + 0.32 * contrast_score + 0.26 * content_score
 
     return {
@@ -422,6 +424,39 @@ def select_pad_circle(candidates, rgb, pad_aspect_min=0.75, pad_aspect_max=1.35)
     return max(central, key=lambda item: item["radius"] * (0.7 + item["boundary_coverage"]))
 
 
+def select_stained_texture_pad_circle(rgb, edge, selected=None):
+    """Recover a round stained pad when foam edges produce an interior circle."""
+    height, width = rgb.shape[:2]
+    min_dim = min(height, width)
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    chroma = np.hypot(lab[:, :, 1] - 128, lab[:, :, 2] - 128)
+    density = cv2.GaussianBlur(
+        (chroma >= 8.0).astype(np.float32), (0, 0), max(1.2, min_dim * 0.018)
+    )
+    mask = (density >= max(0.025, float(density.max()) * 0.16)).astype(np.uint8)
+    if not density_mask_is_clearly_round(mask):
+        return None
+    contour = _largest_contour(mask)
+    (x, y), radius = cv2.minEnclosingCircle(contour)
+    candidate = candidate_metrics(rgb, edge, (round(x), round(y), round(radius)))
+    if not (
+        candidate["center_distance"] <= 0.13
+        and 0.18 <= candidate["radius_ratio"] <= 0.49
+        and candidate["visible_fraction"] >= 0.95
+        and carrier_texture_metrics(rgb, candidate)["annulus_median"] >= 14.0
+    ):
+        return None
+    if selected is not None:
+        selected_roi = make_roi(rgb.shape[:2], [selected], 1.0)
+        retained = np.count_nonzero((mask > 0) & (selected_roi > 0)) / max(1, mask.sum())
+        if retained >= 0.90:
+            return None
+    roi = make_roi(rgb.shape[:2], [candidate], 1.0)
+    if not circle_roi_has_content_contrast(rgb, mask, roi, "single_texture_stain"):
+        return None
+    return candidate
+
+
 def select_double_edge(candidates, rgb):
     height, width = rgb.shape[:2]
     min_dim = min(height, width)
@@ -498,6 +533,13 @@ def select_circles_with_cascade(
 
     if pad_aspect_min <= aspect_ratio <= pad_aspect_max:
         pad_circle = select_pad_circle(candidates, detection_rgb, pad_aspect_min, pad_aspect_max)
+        stained_pad = select_stained_texture_pad_circle(
+            detection_rgb,
+            edge if edge is not None else feature_edge(detection_rgb),
+            pad_circle,
+        )
+        if stained_pad is not None:
+            return "single_texture_stain", [stained_pad]
         if pad_circle is not None:
             return "single", [pad_circle]
 

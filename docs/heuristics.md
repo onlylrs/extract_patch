@@ -21,6 +21,8 @@ heuristic_pipe: [density]
 - `smartcyto_circle`：完整保留 SmartCyto 的 single、double-texture、double-stain、
   double-edge、single-texture-Hough、single-texture-radial、enclosing refine 和安全判断。
   其特征图会先修复中性的暗色环，因此可降低泡沫/气泡边缘对纹理圆检测的干扰。
+  对泡沫背景中的单圆，若 Hough 候选未覆盖完整的圆形染色区域，会使用经过圆度、
+  载体纹理和内容对比检查的染色区域外接圆（`single_texture_stain`）。
 - `serrated_outer_circle`：先用受限径向拟合获得高召回核心，再在锯齿边缘内执行宽松密度
   扩展。最终 ROI 可以是圆、椭圆或不规则形状；硬性安全边界用于排除外层锯齿扫描轮廓。
 - `qmh_center_circle`：QMH 专用的中央圆形涂布区；允许圆心偏移和圆被画布截断，并排除
