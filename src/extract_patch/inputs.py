@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+import hashlib
+import logging
 from pathlib import Path
 
 from .models import SlideSpec
@@ -77,14 +79,35 @@ def _iter_input_values(
         yield from value
 
 
+def _slide_checksum(spec: SlideSpec) -> str:
+    """Hash the full slide, including DICOM volumes and MRXS sidecars."""
+    digest = hashlib.sha256()
+    roots = (spec.source,) if spec.source.is_dir() else (spec.entrypoint, *spec.sidecars)
+    for index, root in enumerate(roots):
+        files = sorted(path for path in root.rglob("*") if path.is_file()) if root.is_dir() else [root]
+        for path in files:
+            relative = path.relative_to(root).as_posix() if root.is_dir() else ""
+            label = f"{index}:{relative}".encode("utf-8")
+            digest.update(len(label).to_bytes(8, "big"))
+            digest.update(label)
+            digest.update(path.stat().st_size.to_bytes(8, "big"))
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return digest.hexdigest()
+
+
 def iter_inputs(
     value: str | Path | Sequence[str | Path],
     *,
     root: Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> Iterator[SlideSpec]:
     """Resolve inputs incrementally so large lists can start work immediately."""
     seen_entries: set[Path] = set()
-    seen_ids: dict[str, Path] = {}
+    seen_ids: dict[str, SlideSpec] = {}
+    checksums: dict[str, str] = {}
+    logger = logger if logger is not None else logging.getLogger(__name__)
     resolved = 0
     for item in _iter_input_values(value):
         path = Path(_strip_quotes(str(item)))
@@ -92,14 +115,26 @@ def iter_inputs(
             path = root / path
         spec = resolve_slide(path)
         if spec.entrypoint in seen_entries:
+            logger.warning("Duplicate WSI path %s; skipping", spec.entrypoint)
             continue
         prior = seen_ids.get(spec.slide_id)
-        if prior is not None and prior != spec.entrypoint:
+        if prior is not None:
+            if spec.slide_id not in checksums:
+                checksums[spec.slide_id] = _slide_checksum(prior)
+            if _slide_checksum(spec) == checksums[spec.slide_id]:
+                logger.warning(
+                    "Duplicate WSI slide_id=%s with identical SHA-256 content: %s; "
+                    "keeping %s and skipping duplicate",
+                    spec.slide_id, spec.entrypoint, prior.entrypoint,
+                )
+                seen_entries.add(spec.entrypoint)
+                continue
             raise ValueError(
-                f"Duplicate slide_id {spec.slide_id!r}: {prior} and {spec.entrypoint}"
+                f"Duplicate slide_id {spec.slide_id!r} with different content: "
+                f"{prior.entrypoint} and {spec.entrypoint}"
             )
         seen_entries.add(spec.entrypoint)
-        seen_ids[spec.slide_id] = spec.entrypoint
+        seen_ids[spec.slide_id] = spec
         resolved += 1
         yield spec
     if not resolved:

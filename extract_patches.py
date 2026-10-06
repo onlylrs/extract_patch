@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -66,8 +67,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(dump_config(config), end="")
         return 0
 
+    # Resolve the run logger's name before consuming the lazy input stream.
+    input_logger = None
+    if not args.inspect:
+        from extract_patch.reporting import make_run_id
+
+        prefix = "center_preview" if args.center_preview else "preview" if args.preview else "extract"
+        args.run_id = args.run_id or make_run_id(prefix)
+        input_logger = logging.getLogger(f"extract_patch.{args.run_id}")
+
     try:
-        specs = iter_inputs(_input_value(args), root=args.input_root)
+        specs = iter_inputs(_input_value(args), root=args.input_root, logger=input_logger)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Input error: {exc}") from exc
 
