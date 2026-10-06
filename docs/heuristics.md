@@ -49,8 +49,12 @@ heuristic_arbitration:
 ```
 
 `qmh_center_circle` 是载体专用几何先验，不应放进无法确认 QMH 来源的通用配置。
-`smear` 支持深色前景覆盖接近整个画布的 `full_field` 模式；该模式仍要求宽幅画布、
-高 solidity 且轮廓至少接触三条画布边界。
+`smear` 支持前景覆盖接近整个画布的 `full_field` 模式；该模式允许方形或较方的画布，
+仍要求覆盖率超过 90%、高 solidity 且轮廓至少接触三条画布边界。
+将画面分成 5×5 格后，每格染色像素比例至少为 15%，以排除圆形涂布区外的泡沫载体。
+染色像素要求 RGB 最大与最小通道差至少为 10，最小通道小于 230；上述门槛可通过
+`min_full_field_aspect`、`min_full_field_tile_stain_fraction`、`full_field_stain_chroma`
+和 `full_field_stain_max_min_channel` 调整。普通长条涂片仍要求长宽比至少 1.45。
 `serrated_outer_circle` 通过外侧扫描环和内侧完整径向支撑自行执行安全检查，因此可设置
 `density_guard: false`；这适用于 density 主要命中黑色扫描弧而非内侧稀疏样本的载体。
 

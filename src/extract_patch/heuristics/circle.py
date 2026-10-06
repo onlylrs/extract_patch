@@ -256,15 +256,34 @@ class SmearHeuristic(Heuristic):
             and metrics["solidity"] >= float(cfg.get("min_solidity", 0.80))
             and metrics["circularity"] >= float(cfg.get("min_circularity", 0.35))
         )
+        # A scanned full-field smear need not have an elongated canvas. Require
+        # stain throughout the field so a textured carrier around a circular pad
+        # cannot pass merely because its foreground contour fills the canvas.
+        rgb = image.astype(np.int16)
+        stain = (
+            (
+                rgb.max(axis=2) - rgb.min(axis=2)
+                >= float(cfg.get("full_field_stain_chroma", 10.0))
+            )
+            & (rgb.min(axis=2) < float(cfg.get("full_field_stain_max_min_channel", 230.0)))
+        )
+        tiles = [
+            tile
+            for row in np.array_split(stain, 5, axis=0)
+            for tile in np.array_split(row, 5, axis=1)
+        ]
+        metrics["min_tile_stain_fraction"] = min(float(tile.mean()) for tile in tiles)
         full_field = (
             bool(cfg.get("allow_full_field", True))
             and float(cfg.get("min_full_field_area_fraction", 0.90))
             < metrics["area_fraction"]
             <= float(cfg.get("max_full_field_area_fraction", 1.0))
-            and metrics["aspect"] >= float(cfg.get("min_aspect", 1.45))
+            and metrics["aspect"] >= float(cfg.get("min_full_field_aspect", 1.0))
             and metrics["solidity"] >= float(cfg.get("min_full_field_solidity", 0.95))
             and metrics["border_touch_count"]
             >= float(cfg.get("min_full_field_border_touches", 3))
+            and metrics["min_tile_stain_fraction"]
+            >= float(cfg.get("min_full_field_tile_stain_fraction", 0.15))
         )
         metrics["mode"] = (
             "full_field" if full_field else "standard" if standard else "none"
